@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-10 — Public installation command
+
+- Made the installer repository public so the script can be downloaded without GitHub authentication.
+- Added one copy-and-paste Ubuntu command that installs download prerequisites, downloads the `.bash` file, and runs the full installer.
+- Kept the downloaded installer available in the current directory and the installed copy under `/opt/forgemill` for future use.
+
 ## 2026-10-10 — Initial installer
 
 - Added a Bash installer targeting fresh Ubuntu 22.04, 24.04 and 26.04 LTS amd64 servers.

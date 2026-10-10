@@ -4,11 +4,19 @@ A lightweight installer for [ForgeMill](https://github.com/blink-zero/forgemill/
 
 See [operational notes](NOTES.md) for storage, credentials, maintenance and validation details, and [the changelog](CHANGELOG.md) for changes.
 
-Copy `install-forgemill.bash` to a fresh **Ubuntu 22.04, 24.04 or 26.04 LTS x86-64 (amd64)** server, then run:
+## One-command installation
+
+On a fresh **Ubuntu 22.04, 24.04 or 26.04 LTS x86-64 (amd64)** server, paste this entire command into the terminal from your home directory:
 
 ```bash
-sudo bash install-forgemill.bash
+sudo apt-get update && sudo apt-get install -y --no-install-recommends ca-certificates curl && curl -fsSL --retry 3 https://raw.githubusercontent.com/howard-99/forgemill-installer/main/install-forgemill.bash -o install-forgemill.bash && sudo bash install-forgemill.bash
 ```
+
+This installs the download prerequisites, saves `install-forgemill.bash` in your current directory, and runs the full installer with administrator privileges. The installer handles Docker and all other required packages, downloads the newest stable ForgeMill release, starts the service, and prints the HTTPS URL and verified admin login credentials. No GitHub account or repository clone is needed. If Ubuntu asks for your sudo password, enter your Ubuntu account password.
+
+The installer also saves a copy at `/opt/forgemill/install.bash` for later upgrades. If a download or prerequisite step fails, the command stops before running the installer; fix the reported issue and run the same command again.
+
+If you already have the downloaded file, run `sudo bash install-forgemill.bash`.
 
 The installer prints the HTTPS URL, username **admin**, and a randomly generated password after checking health and verifying login. Default address: **https://SERVER-IP:8443**. It generates a self-signed certificate valid for ten years; trust `/opt/forgemill/tls/server.crt` in your browser, or replace it and the corresponding `server.key` with your own certificate and rerun the installer. Use the printed server IP when trusting the generated certificate.
 
