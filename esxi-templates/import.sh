@@ -1,7 +1,7 @@
 #!/bin/sh
-# ForgeMill ESXi Golden Image Importer — v1.4
+# ForgeMill ESXi Main Template Importer — v1.5
 # ESXi 7.x / 8.x BusyBox/POSIX sh; no external VM management workstation required.
-# Usage: sh forgemill-esxi-templates-final.sh [all|ubuntu|chr|rocky|check|status]
+# Usage: sh forgemill-esxi-import.sh [all|ubuntu|chr|rocky|check|status]
 # Imported VMs remain powered OFF. Nothing registered or stored previously is deleted.
 set -eu
 
@@ -17,6 +17,8 @@ DATASTORE=${DATASTORE:-}
 MIN_FREE_GB=${MIN_FREE_GB:-12}
 KEEP_SOURCE=${KEEP_SOURCE:-0}
 KEEP_FAILED=${KEEP_FAILED:-0}
+# Opt-in only: bypass TLS certificate validation for HTTPS OVA sources.
+WGET_NO_CHECK_CERT=${WGET_NO_CHECK_CERT:-0}
 HW_VERSION=17
 
 say() { printf '\n===== %s =====\n' "$*"; }
@@ -28,7 +30,7 @@ case "$MODE" in
   all|ubuntu|chr|mikrotik|rocky|check|status) ;;
   -h|--help|help)
     cat <<'HELP'
-Usage: sh forgemill-esxi-templates-final.sh [MODE]
+Usage: sh forgemill-esxi-import.sh [MODE]
   all       Import Ubuntu 24.04, MikroTik CHR 7.24.5, Rocky 9.8 (default)
   ubuntu    Import Ubuntu 24.04 only
   chr       Import MikroTik CHR 7.24.5 only (alias mikrotik)
@@ -43,9 +45,12 @@ Optional environment variables:
   MIN_FREE_GB=12         Minimum free storage required before import
   KEEP_SOURCE=1          Preserve downloaded/extracted OVA files after success
   KEEP_FAILED=1          Preserve failed staging directory for diagnostics
+  WGET_NO_CHECK_CERT=1   Bypass TLS certificate validation for HTTPS OVA only (insecure)
 
 Safety: never overwrite existing templates, delete original VM disks, change
 firewall rules, or power on imported images. Use a dedicated VM network.
+Standalone ESXi has no native vCenter template objects: these are tagged,
+powered-off main-template source VMs for ForgeMill cloning.
 HELP
     exit 0 ;;
   *) fail "Unknown mode '$MODE'. Use all, ubuntu, chr, rocky, check or status." ;;
@@ -90,8 +95,23 @@ esac
 info "ESXi host version: $(printf '%s\n' "$ESXI_VER" | awk '/Version:/ {print $2;exit}')"
 
 if [ "$MODE" = status ]; then
-  say 'VM inventory (including existing golden images)'
-  vim-cmd vmsvc/getallvms
+  say 'VM inventory and ForgeMill main-template sources'
+  inventory=$(vim-cmd vmsvc/getallvms) || fail 'Cannot list ESXi VMs'
+  printf '%s\n' "$inventory"
+  for name in ubuntu-24.04-main-template mikrotik-chr-7.24.5-main-template rocky-9.8-main-template; do
+    id=$(printf '%s\n' "$inventory" | awk -v n="$name" '$1 ~ /^[0-9]+$/ && $2==n {print $1; exit}')
+    if [ -z "$id" ]; then
+      info "NOT FOUND: $name"
+      continue
+    fi
+    state=$(vim-cmd vmsvc/power.getstate "$id") || fail "Cannot query VMID $id"
+    if printf '%s\n' "$state" | grep -q 'Powered off'; then
+      info "READY: $name (VMID $id, powered off, ForgeMill source VM)"
+    else
+      warn "NOT READY: $name (VMID $id, not powered off)"
+    fi
+  done
+  info 'Standalone ESXi registers these as VMs, not native vCenter template objects.'
   exit 0
 fi
 
@@ -187,6 +207,7 @@ say 'VM network inventory'
 esxcli network vswitch standard portgroup list
 select_datastore
 validate_portgroup
+case "$WGET_NO_CHECK_CERT" in 0|1) ;; *) fail 'WGET_NO_CHECK_CERT must be 0 or 1' ;; esac
 
 if [ "$MODE" = check ]; then
   say 'Preflight PASS'
@@ -288,6 +309,21 @@ verify_manifest() {
 }
 
 ACTIVE_STAGE=''
+# Keep HTTPS certificate validation on by default. Some ESXi BusyBox wget
+# builds cannot validate the certificate chain; only opt out explicitly.
+download_ova() {
+  target_file=$1
+  source_url=$2
+  case "$source_url" in
+    https://*)
+      if [ "$WGET_NO_CHECK_CERT" = 1 ]; then
+        wget --no-check-certificate -O "$target_file" "$source_url"
+        return $?
+      fi
+      ;;
+  esac
+  wget -O "$target_file" "$source_url"
+}
 cleanup_stage() {
   exitcode=$?
   trap - 0 HUP INT TERM
@@ -310,7 +346,8 @@ import_image() {
   kind=$1
   case "$kind" in
     ubuntu)
-      VMNAME='ubuntu-24.04-golden'
+      VMNAME='ubuntu-24.04-main-template'
+      LEGACY_VMNAME='ubuntu-24.04-golden'
       FILE='ubuntu-24.04-server-cloudimg-amd64.ova'
       GUEST='ubuntu64Guest'
       RAM=2048
@@ -318,7 +355,8 @@ import_image() {
       CTRL_DEFAULT='6|VirtualSCSI'
       ;;
     chr)
-      VMNAME='mikrotik-chr-7.24.5-golden'
+      VMNAME='mikrotik-chr-7.24.5-main-template'
+      LEGACY_VMNAME='mikrotik-chr-7.24.5-golden'
       FILE='chr-7.24.5.ova'
       GUEST='otherLinux64Guest'
       RAM=1024
@@ -326,7 +364,8 @@ import_image() {
       CTRL_DEFAULT='5|IDE'
       ;;
     rocky)
-      VMNAME='rocky-9.8-golden'
+      VMNAME='rocky-9.8-main-template'
+      LEGACY_VMNAME='rocky-9.8-golden'
       FILE='rocky-9.8.ova'
       GUEST='otherLinux64Guest'
       RAM=2048
@@ -341,6 +380,14 @@ import_image() {
     info "SKIP: VM already registered (VMID $id). Preserving existing template."
     vim-cmd vmsvc/power.getstate "$id" || true
     return 0
+  fi
+  # Never silently import a second copy when a legacy -golden source exists.
+  legacy_id=$(registered_id "$LEGACY_VMNAME")
+  if [ -n "$legacy_id" ]; then
+    fail "Legacy source $LEGACY_VMNAME is registered (VMID $legacy_id). No duplicate imported. Rename/migrate it intentionally before re-running."
+  fi
+  if previous=$(existing_directory "$LEGACY_VMNAME"); then
+    fail "Legacy source directory exists: $previous. No duplicate imported. Inspect it before migration."
   fi
   if previous=$(existing_directory "$VMNAME"); then
     fail "Directory already exists: $previous. No overwrite performed. Inspect/recover this VM manually."
@@ -358,10 +405,13 @@ import_image() {
   VMX="$STAGE/$VMNAME.vmx"
 
   say "Downloading $BASE_URL/$FILE"
+  case "$BASE_URL" in
+    https://*) if [ "$WGET_NO_CHECK_CERT" = 1 ]; then warn 'HTTPS certificate verification disabled for OVA download (WGET_NO_CHECK_CERT=1)'; fi ;;
+  esac
   success=0
   for attempt in 1 2 3; do
     rm -f "$OVA"
-    if wget -O "$OVA" "$BASE_URL/$FILE"; then
+    if download_ova "$OVA" "$BASE_URL/$FILE"; then
       success=1
       break
     fi
@@ -447,6 +497,9 @@ import_image() {
 config.version = "8"
 virtualHW.version = "$HW_VERSION"
 displayName = "$VMNAME"
+annotation = "ForgeMill main-template source: standalone ESXi powered-off VM; clone for deployment"
+guestinfo.forgemill.role = "main-template"
+guestinfo.forgemill.image = "$kind"
 guestOS = "$GUEST"
 numvcpus = "2"
 memSize = "$RAM"
@@ -476,6 +529,7 @@ disk.EnableUUID = "TRUE"
 tools.syncTime = "TRUE"
 EOF_NIC
 
+  grep -qx 'guestinfo.forgemill.role = "main-template"' "$VMX" || fail 'Missing ForgeMill template marker'
   grep -qx "firmware = \"$FW\"" "$VMX" || fail 'Malformed firmware line in VMX'
   grep -qx 'ethernet0.startConnected = "TRUE"' "$VMX" || fail 'Malformed ethernet setting'
   grep -qx 'disk.EnableUUID = "TRUE"' "$VMX" || fail 'Malformed disk UUID setting'
@@ -486,7 +540,7 @@ EOF_NIC
   # Keep a small audit record so you can diagnose boot/OVF differences later.
   cp "$OVF" "$STAGE/original-template.ovf"
   cat > "$STAGE/IMPORT-INFO.txt" <<EOF_IMPORT
-Imported by ForgeMill ESXi Golden Template Importer
+Imported by ForgeMill ESXi Main Template Importer v1.5
 Template: $VMNAME
 OVA source: $BASE_URL/$FILE
 OVA SHA256: $OVA_SHA256
@@ -496,7 +550,8 @@ ESXi datastore: $DS
 Network port group: $PORTGROUP
 ESXi build: $ESXI_VER
 Imported on: $(date -u 2>/dev/null || printf 'not available')
-Note: powered-off golden VM. Boot a clone and validate guest networking.
+Role: ForgeMill main-template source VM (not a native vCenter template).
+Note: keep this VM powered off. Boot a clone and validate guest networking.
 EOF_IMPORT
 
   # Remove copies only after complete image validation/conversion.
@@ -511,15 +566,16 @@ EOF_IMPORT
   mv "$STAGE" "$FINAL" || fail "Cannot publish VM directory to $FINAL"
   ACTIVE_STAGE=''
   FINAL_VMX="$FINAL/$VMNAME.vmx"
-  say 'Registering powered-off golden VM'
+  say 'Registering powered-off ForgeMill main-template source VM'
   VMID=$(vim-cmd solo/registervm "$FINAL_VMX") || fail "Registration failed; files retained at $FINAL"
   case "$VMID" in ''|*[!0-9]*) fail "Unexpected registration result '$VMID'; files retained at $FINAL" ;; esac
   vm_present=$(vim-cmd vmsvc/getallvms 2>&1 | awk -v n="$VMNAME" -v id="$VMID" '$1==id && $2==n {print "ok"; exit}')
   [ "$vm_present" = ok ] || fail "VMID $VMID registered but not valid in inventory; inspect $FINAL_VMX and /var/log/hostd.log"
   power_state=$(vim-cmd vmsvc/power.getstate "$VMID") || fail "Cannot query VM power state: $VMID"
   printf '%s\n' "$power_state"
-  printf '%s\n' "$power_state" | grep -q 'Powered off' || fail 'Golden VM is unexpectedly powered on'
+  printf '%s\n' "$power_state" | grep -q 'Powered off' || fail 'Main-template source VM is unexpectedly powered on'
   info "SUCCESS: $VMNAME (VMID $VMID) at $FINAL"
+  info 'Registered as a powered-off, annotated ForgeMill template source; native vCenter templates require vCenter.'
 }
 
 case "$MODE" in
