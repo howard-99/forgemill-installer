@@ -1,8 +1,8 @@
 #!/bin/sh
-# ForgeMill ESXi CHR recovery v2: pre-extracted legacy BIOS OVA, no unzip.
+# ForgeMill ESXi CHR recovery v3: version-aware legacy BIOS OVA, no unzip.
 # Keeps original template and the existing 10 GiB VMDK unchanged.
 # Run: sh repair-mikrotik-esxi-188.sh check
-#      OVA_SHA256=<expected SHA256 from the Ubuntu image server> sh repair-mikrotik-esxi-188.sh apply
+#      CHR_VERSION=7.23.7 OVA_SHA256=<expected sha256> OVA_URL=<OVA HTTP URL> sh repair-mikrotik-esxi-188.sh apply
 set -eu
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:${PATH:-}
 export PATH
@@ -10,11 +10,12 @@ export PATH
 MODE=${1:-check}
 VMID=7
 VMX=/vmfs/volumes/DISK1-raid1/mikrotik-1/mikrotik-1/mikrotik-1.vmx
-WORK=/vmfs/volumes/DISK1-raid1/mikrotik-1-legacy-bios-repair
-OVA_URL=${OVA_URL:-http://172.31.31.183/iso/chr-7.24.5-legacy-bios.ova}
+CHR_VERSION=${CHR_VERSION:-7.23.7}
+WORK=/vmfs/volumes/DISK1-raid1/mikrotik-1-legacy-bios-repair/$CHR_VERSION
+OVA_URL=${OVA_URL:-http://172.31.31.183/iso/chr-${CHR_VERSION}-legacy-bios.ova}
 OVA_SHA256=${OVA_SHA256:-}
-OVA=$WORK/chr-7.24.5-legacy-bios.ova
-NEW_DISK=$WORK/chr-7.24.5-legacy-bios-boot.vmdk
+OVA=$WORK/chr-${CHR_VERSION}-legacy-bios.ova
+NEW_DISK=$WORK/chr-${CHR_VERSION}-legacy-bios-boot.vmdk
 
 fail() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "INFO: $*"; }
@@ -27,17 +28,21 @@ find_exec() {
 }
 
 case "$MODE" in check|apply) ;; *) fail "Use check or apply" ;; esac
+case "$CHR_VERSION" in
+  ''|*[!0-9.]*|.*|*.|*..*) fail 'CHR_VERSION must be a dotted numeric version, such as 7.23.7' ;;
+esac
 # ESXi BusyBox may not support 'command -v'; verify executables by path.
 for bin in vim-cmd vmkfstools tar awk grep sha256sum cp mv wget mkdir rm date; do
   find_exec "$bin" || fail "Missing ESXi executable: $bin"
 done
 [ -f "$VMX" ] || fail "VMX missing: $VMX"
-vmkfstools -e /vmfs/volumes/DISK1-raid1/mikrotik-1/mikrotik-1.vmdk || fail "Original VMDK invalid or locked; power off VM first"
 vmline=$(vim-cmd vmsvc/getallvms | awk -v i="$VMID" '$1==i && $2=="mikrotik-1" {print $0;exit}')
 [ -n "$vmline" ] || fail "VMID $VMID is not named mikrotik-1"
 vim-cmd vmsvc/power.getstate "$VMID" | grep -q 'Powered off' || fail "Power off VMID $VMID first"
+vmkfstools -e /vmfs/volumes/DISK1-raid1/mikrotik-1/mikrotik-1.vmdk || fail "Original VMDK inconsistent; do not modify"
 
 info "Target VM: $vmline"
+info "CHR version: $CHR_VERSION"
 info "Existing VMX: $VMX"
 info "Proposed new disk: $NEW_DISK"
 info "Source OVA: $OVA_URL"
