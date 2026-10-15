@@ -30,14 +30,14 @@ class ESXiImporterTests(unittest.TestCase):
         self.assertIsNotNone(block)
         self.assertEqual(
             re.findall(r"import_image (\w+)", block["body"]),
-            ["ubuntu", "rockyvmware", "chr7237"],
+            ["ubuntu", "rockyvmware", "chr721rc6"],
         )
 
     def test_template_names_and_legacy_guards(self):
         names = (
             "Template-Ubuntu-24.04",
             "Template-Rocky-9.8",
-            "Template-MikroTik-CHR-7.23.7",
+            "Template-MikroTik-CHR-7.21rc6",
             "Template-MikroTik-CHR-7.19.6",
         )
         for name in names:
@@ -59,17 +59,29 @@ class ESXiImporterTests(unittest.TestCase):
         )
         self.assertNotIn("FILE='rocky-9.8.ova'", self.text)
 
-    def test_chr_bios_ide_keyboard_and_optional_7196(self):
-        self.assertIn("FILE='chr-7.23.7-legacy-bios.ova'", self.text)
+    def test_working_chr_721rc6_uses_direct_vmdk_bios_ide_no_keyboard_flags(self):
+        self.assertIn("FILE='chr-7.21rc6-legacy-bios.vmdk'", self.text)
+        self.assertIn("SOURCE_KIND=vmdk", self.text)
+        self.assertIn("VMNAME='Template-MikroTik-CHR-7.21rc6'", self.text)
+        self.assertIn("EXPECTED_SHA256=${CHR_721RC6_SHA256:-}", self.text)
+        self.assertIn("CTRL_DEFAULT='5|IDE'", self.text)
+        self.assertIn("CPU=1", self.text)
+        self.assertIn('SOURCE_DISK="$SOURCE_ARCHIVE"', self.text)
+        self.assertIn('if [ "$SOURCE_KIND" = vmdk ]; then', self.text)
+        self.assertIn('if [ "$CHR_KEYBOARD_FIX" = 1 ]; then', self.text)
+        self.assertIn("CHR_KEYBOARD_FIX=0", self.text)
+        self.assertIn('virtualHW.version = "$HW_VERSION"', self.text)
+        self.assertIn('vmkfstools -i "$SOURCE_DISK" "$DISK" -d thin', self.text)
+        self.assertNotIn("chr-7.23.7", self.text)
+        self.assertNotIn("chr7237", self.text)
+        self.assertRegex(self.text, r"(?m)^  mikrotik\|chr\|chr721rc6\) import_image chr721rc6 ;;$")
+
+    def test_optional_7196_still_requires_ova_and_keyboard_override(self):
         self.assertIn("FILE='chr-7.19.6-legacy-bios.ova'", self.text)
         self.assertIn("EXPECTED_SHA256=${CHR_7196_SHA256:-}", self.text)
-        self.assertIn("EXPECTED_SHA256=${CHR_7237_SHA256:-}", self.text)
-        self.assertIn("CTRL_DEFAULT='5|IDE'", self.text)
+        self.assertIn("CHR_KEYBOARD_FIX=1", self.text)
         self.assertIn('keyboard.allowBothIRQs = "FALSE"', self.text)
-        self.assertIn('"$DISK_CTRL" = ide', self.text)
-        self.assertRegex(
-            self.text, r"(?m)^  chr7196\) import_image chr7196 ;;$"
-        )
+        self.assertRegex(self.text, r"(?m)^  chr7196\) import_image chr7196 ;;$")
         default = re.search(
             r"(?m)^  all\)\n(?P<body>(?:    import_image [^\n]+\n)+)    ;;",
             self.text,
