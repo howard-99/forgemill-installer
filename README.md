@@ -16,16 +16,23 @@ names:
 
 The images must be hosted on your trusted image server. The default source
 is `http://172.31.31.183/iso` and the default ESXi port group is
-`VM Network`. From the **ESXi SSH shell as root**:
+`VM Network`. **New ESXi 7 hosts have been observed hanging during
+`wget` TLS connections to GitHub; a successful ping doesn't solve it.**
+Use the [image-server publisher](esxi-templates/publish-to-image-server.sh)
+once on your Proxmox/Linux HTTP server to stage the script at
+`http://172.31.31.183/iso/forgemill-esxi-import.sh`. Then, from each
+**ESXi SSH shell as root**:
 
 ```sh
-wget --no-check-certificate -O /tmp/forgemill-esxi-import.sh https://raw.githubusercontent.com/howard-99/forgemill-installer/main/esxi-templates/import.sh && sh -n /tmp/forgemill-esxi-import.sh && sh /tmp/forgemill-esxi-import.sh check && sh /tmp/forgemill-esxi-import.sh all && sh /tmp/forgemill-esxi-import.sh status
+wget -O /tmp/forgemill-esxi-import.sh http://172.31.31.183/iso/forgemill-esxi-import.sh && sh -n /tmp/forgemill-esxi-import.sh && sh /tmp/forgemill-esxi-import.sh check && sh /tmp/forgemill-esxi-import.sh all && sh /tmp/forgemill-esxi-import.sh status
 ```
 
-Use a pinned audited script revision and validate your image checksums in
-production; TLS verification is disabled for the GitHub download in this
-compatibility example. For explicit datastore, trusted OVA hashes, and
-full limitations see the [ESXi install instructions](esxi-templates/README.md).
+**Compare the downloaded script SHA-256 to the trusted publisher's value
+before running in production**; the convenient one-liner by itself
+does not authenticate an HTTP script. Prefer a pinned audited commit and
+independently verified OVA checksums. For staging commands, explicit
+datastore, hash variables and limitations see the
+[ESXi install instructions](esxi-templates/README.md).
 
 **Important:** The standalone-ESXi fallback in unpatched upstream ForgeMill
 may change the MikroTik IDE boot controller to SCSI. This repository also
