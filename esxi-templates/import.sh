@@ -1,7 +1,7 @@
 #!/bin/sh
-# ForgeMill ESXi Main Template Importer — v2.2
+# ForgeMill ESXi Main Template Importer — v2.3
 # ESXi 7.x / 8.x BusyBox/POSIX sh; no external VM management workstation required.
-# Usage: sh forgemill-esxi-import.sh [all|ubuntu|rocky|mikrotik|chr7196|check|status]
+# Usage: sh forgemill-esxi-import.sh [all|ubuntu|rocky|mikrotik|chr721rc6|chr7196|check|status]
 # Imported VMs remain powered OFF. Nothing registered or stored previously is deleted.
 set -eu
 
@@ -27,14 +27,14 @@ warn() { printf '[WARN] %s\n' "$*" >&2; }
 fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
 case "$MODE" in
-  all|ubuntu|rocky|rockyvmware|chr|mikrotik|chr7237|chr7196|check|status) ;;
+  all|ubuntu|rocky|rockyvmware|chr|mikrotik|chr721rc6|chr7196|check|status) ;;
   -h|--help|help)
     cat <<'HELP'
 Usage: sh forgemill-esxi-import.sh [MODE]
-  all       Import EXACTLY THREE: Ubuntu 24.04, Rocky 9.8 VMware, CHR 7.23.7
+  all       Import EXACTLY THREE: Ubuntu 24.04, Rocky 9.8 VMware, CHR 7.21rc6
   ubuntu    Import Ubuntu 24.04 only
   rocky     Import tested Rocky 9.8 VMware OVA only (alias rockyvmware)
-  mikrotik  Import CHR 7.23.7 Legacy BIOS only (aliases chr, chr7237)
+  mikrotik  Import working CHR 7.21rc6 BIOS+IDE VMDK (aliases chr, chr721rc6)
   chr7196   Import CHR 7.19.6 Legacy BIOS as an OPTIONAL test template
   check     Display datastores/VM networks and selected target datastore
   status    Display registered virtual machines; no changes
@@ -42,15 +42,15 @@ Usage: sh forgemill-esxi-import.sh [MODE]
 Optional environment variables:
   DATASTORE='DISK1-raid1'  Prefer this specific mounted VMFS datastore
   PORTGROUP='VM Network'  Exact ESXi standard VM port-group name
-  BASE_URL='http://172.31.31.183/iso'  OVA files source
+  BASE_URL='http://172.31.31.183/iso'  OVA/VMDK image source
   MIN_FREE_GB=12         Minimum free storage required before import
   KEEP_SOURCE=1          Preserve downloaded/extracted OVA files after success
   KEEP_FAILED=1          Preserve failed staging directory for diagnostics
   UBUNTU_SHA256=...      Recommended trusted OVA SHA256 for Ubuntu 24.04
-  CHR_7237_SHA256=...    Recommended trusted OVA SHA256 for CHR 7.23.7
+  CHR_721RC6_SHA256=...  Recommended trusted VMDK SHA256 for CHR 7.21rc6
   CHR_7196_SHA256=...    Recommended trusted OVA SHA256 for CHR 7.19.6
   ROCKY_VMWARE_SHA256=... Override pinned Rocky 9.8 SHA256 if rebuilt
-  WGET_NO_CHECK_CERT=1   Bypass TLS certificate validation for HTTPS OVA only (insecure)
+  WGET_NO_CHECK_CERT=1   Bypass TLS certificate validation for HTTPS sources (insecure)
 
 Safety: never overwrite existing templates, delete original VM disks, change
 firewall rules, or power on imported images. Use a dedicated VM network.
@@ -61,7 +61,7 @@ boot disks as SCSI and lose CHR keyboard settings. Import alone does not
 repair ForgeMill's cloning code; test a CHR deployment before production.
 HELP
     exit 0 ;;
-  *) fail "Unknown mode '$MODE'. Use all, ubuntu, rocky, mikrotik, chr, chr7237, chr7196, rockyvmware, check or status." ;;
+  *) fail "Unknown mode '$MODE'. Use all, ubuntu, rocky, mikrotik, chr, chr721rc6, chr7196, rockyvmware, check or status." ;;
 esac
 
 # ESXi 7 may expose commands in different directories and some BusyBox
@@ -106,7 +106,7 @@ if [ "$MODE" = status ]; then
   say 'VM inventory and ForgeMill main-template sources'
   inventory=$(vim-cmd vmsvc/getallvms) || fail 'Cannot list ESXi VMs'
   printf '%s\n' "$inventory"
-  for name in Template-Ubuntu-24.04 Template-Rocky-9.8 Template-MikroTik-CHR-7.23.7 Template-MikroTik-CHR-7.19.6; do
+  for name in Template-Ubuntu-24.04 Template-Rocky-9.8 Template-MikroTik-CHR-7.21rc6 Template-MikroTik-CHR-7.19.6; do
     id=$(printf '%s\n' "$inventory" | awk -v n="$name" '$1 ~ /^[0-9]+$/ && $2==n {print $1; exit}')
     if [ -z "$id" ]; then
       info "NOT FOUND: $name"
@@ -219,7 +219,7 @@ case "$WGET_NO_CHECK_CERT" in 0|1) ;; *) fail 'WGET_NO_CHECK_CERT must be 0 or 1
 
 if [ "$MODE" = check ]; then
   say 'Preflight PASS'
-  info "Default all OVAs under $BASE_URL: ubuntu-24.04-server-cloudimg-amd64.ova, rocky-9.8-forgemill-vmware.ova, chr-7.23.7-legacy-bios.ova"
+  info "Default all sources: $BASE_URL/ubuntu-24.04-server-cloudimg-amd64.ova, $BASE_URL/rocky-9.8-forgemill-vmware.ova, $BASE_URL/chr-7.21rc6-legacy-bios.vmdk"
   info "Optional chr7196 OVA: $BASE_URL/chr-7.19.6-legacy-bios.ova (NOT part of all)"
   info 'No image files downloaded or boot-tested in check mode.'
   info 'No VMs were changed.'
@@ -355,6 +355,9 @@ trap 'exit 129' HUP
 import_image() {
   kind=$1
   IS_CHR=0
+  CHR_KEYBOARD_FIX=0
+  SOURCE_KIND=ova
+  CPU=2
   EXPECTED_SHA256=''
   # VMX guestOS values MUST use VMware .vmx identifiers, not vSphere API
   # enums (*Guest). Example: otherlinux-64, NOT otherLinux64Guest.
@@ -380,18 +383,23 @@ import_image() {
       FW_DEFAULT=bios
       CTRL_DEFAULT='5|IDE'
       IS_CHR=1
+      CHR_KEYBOARD_FIX=1
       EXPECTED_SHA256=${CHR_7196_SHA256:-}
       ;;
-    chr7237)
-      VMNAME='Template-MikroTik-CHR-7.23.7'
-      LEGACY_NAMES='mikrotik-chr-7.23.7-main-template mikrotik-chr-7.23.7-golden'
-      FILE='chr-7.23.7-legacy-bios.ova'
+    chr721rc6)
+      # This exact VMDK booted with a usable keyboard in a direct ESXi test.
+      # Preserve its BIOS+IDE+HW17/default-keyboard configuration.
+      VMNAME='Template-MikroTik-CHR-7.21rc6'
+      LEGACY_NAMES='mikrotik-chr-7.21rc6-main-template mikrotik-chr-7.21rc6-golden'
+      FILE='chr-7.21rc6-legacy-bios.vmdk'
+      SOURCE_KIND=vmdk
       GUEST='otherlinux-64'
+      CPU=1
       RAM=1024
       FW_DEFAULT=bios
       CTRL_DEFAULT='5|IDE'
       IS_CHR=1
-      EXPECTED_SHA256=${CHR_7237_SHA256:-}
+      EXPECTED_SHA256=${CHR_721RC6_SHA256:-}
       ;;
     rockyvmware)
       VMNAME='Template-Rocky-9.8'
@@ -443,103 +451,114 @@ import_image() {
   ACTIVE_STAGE="$STAGE"
   SRC="$STAGE/ova-source"
   mkdir "$SRC"
-  OVA="$STAGE/source.ova"
+  SOURCE_ARCHIVE="$STAGE/source.ova"
+  if [ "$SOURCE_KIND" = vmdk ]; then SOURCE_ARCHIVE="$STAGE/source.vmdk"; fi
   DISK="$STAGE/$VMNAME.vmdk"
   VMX="$STAGE/$VMNAME.vmx"
 
   say "Downloading $BASE_URL/$FILE"
   case "$BASE_URL" in
-    https://*) if [ "$WGET_NO_CHECK_CERT" = 1 ]; then warn 'HTTPS certificate verification disabled for OVA download (WGET_NO_CHECK_CERT=1)'; fi ;;
+    https://*) if [ "$WGET_NO_CHECK_CERT" = 1 ]; then warn 'HTTPS certificate verification disabled for image download (WGET_NO_CHECK_CERT=1)'; fi ;;
   esac
   success=0
   for attempt in 1 2 3; do
-    rm -f "$OVA"
-    if download_ova "$OVA" "$BASE_URL/$FILE"; then
+    rm -f "$SOURCE_ARCHIVE"
+    if download_ova "$SOURCE_ARCHIVE" "$BASE_URL/$FILE"; then
       success=1
       break
     fi
     warn "Download attempt $attempt failed"
   done
-  [ "$success" -eq 1 ] || fail "OVA download failed: $BASE_URL/$FILE"
-  [ -s "$OVA" ] || fail 'Downloaded OVA is empty'
+  [ "$success" -eq 1 ] || fail "Image download failed: $BASE_URL/$FILE"
+  [ -s "$SOURCE_ARCHIVE" ] || fail 'Downloaded image is empty'
   if [ -n "$EXPECTED_SHA256" ]; then
     case "$EXPECTED_SHA256" in
       *[!0-9a-fA-F]*) fail "Expected SHA256 has non-hex characters for $VMNAME" ;;
     esac
     [ "${#EXPECTED_SHA256}" -eq 64 ] || fail "Expected SHA256 must be 64 hex characters for $VMNAME"
-    find_exec sha256sum >/dev/null 2>&1 || fail 'sha256sum is required for expected OVA checksum verification'
+    find_exec sha256sum >/dev/null 2>&1 || fail 'sha256sum is required for expected image checksum verification'
   else
     warn "No trusted expected SHA256 provided for $VMNAME; HTTP + self-computed checksum does not authenticate the image"
   fi
   if find_exec sha256sum >/dev/null 2>&1; then
-    OVA_SHA256=$(sha256sum "$OVA" | awk '{print $1}')
-    info "Downloaded OVA SHA256: $OVA_SHA256"
+    IMAGE_SHA256=$(sha256sum "$SOURCE_ARCHIVE" | awk '{print $1}')
+    info "Downloaded image SHA256: $IMAGE_SHA256"
     if [ -n "$EXPECTED_SHA256" ]; then
       expected_lower=$(printf '%s' "$EXPECTED_SHA256" | awk '{print tolower($0)}')
-      [ "$OVA_SHA256" = "$expected_lower" ] || fail "OVA SHA256 mismatch for $VMNAME"
-      info 'Verified OVA SHA256 against expected checksum'
+      [ "$IMAGE_SHA256" = "$expected_lower" ] || fail "Image SHA256 mismatch for $VMNAME"
+      info 'Verified image SHA256 against expected checksum'
     fi
   else
-    OVA_SHA256='unavailable (sha256sum not installed)'
-    warn 'Cannot record whole-OVA SHA256 checksum'
+    IMAGE_SHA256='unavailable (sha256sum not installed)'
+    warn 'Cannot record whole-image SHA256 checksum'
   fi
 
-  tar -tf "$OVA" > "$STAGE/archive-files.txt" || fail 'OVA is not a valid TAR archive'
-  # Refuse path traversal or absolute paths before running tar extraction.
-  if awk '$0 ~ /^\// || $0 ~ /^\.\.\// || $0 ~ /\/\.\.\// || $0 ~ /\/\.\.$/ || $0 == ".." {bad=1} END {exit !bad}' "$STAGE/archive-files.txt"; then
-    fail 'OVA contains unsafe archive path names'
-  fi
-  if tar -tvf "$OVA" | awk '{ c=substr($1,1,1); if (c=="l" || c=="h") bad=1 } END {exit !bad}'; then
-    fail 'OVA contains symlinks or hardlinks; refusing extraction'
-  fi
+  if [ "$SOURCE_KIND" = vmdk ]; then
+    # No OVA descriptor in this source. Use the exact working VMDK directly.
+    [ "$kind" = chr721rc6 ] || fail 'Unexpected direct VMDK source'
+    SOURCE_DISK="$SOURCE_ARCHIVE"
+    FW=bios
+    DISK_CTRL=ide
+    DISK_SUB=''
+    info 'Direct VMDK mode: BIOS + IDE boot, default virtual keyboard'
+  else
+    tar -tf "$SOURCE_ARCHIVE" > "$STAGE/archive-files.txt" || fail 'OVA is not a valid TAR archive'
+    # Refuse path traversal or absolute paths before running tar extraction.
+    if awk '$0 ~ /^\// || $0 ~ /^\.\.\// || $0 ~ /\/\.\.\// || $0 ~ /\/\.\.$/ || $0 == ".." {bad=1} END {exit !bad}' "$STAGE/archive-files.txt"; then
+      fail 'OVA contains unsafe archive path names'
+    fi
+    if tar -tvf "$SOURCE_ARCHIVE" | awk '{ c=substr($1,1,1); if (c=="l" || c=="h") bad=1 } END {exit !bad}'; then
+      fail 'OVA contains symlinks or hardlinks; refusing extraction'
+    fi
 
-  say 'Extracting OVA'
-  ( cd "$SRC" && tar -xf "$OVA" ) || fail 'OVA extraction failed'
-  set -- "$SRC"/*.ovf
-  [ "$#" -eq 1 ] && [ -f "$1" ] || fail 'Require exactly one .ovf descriptor'
-  OVF=$1
-  set -- "$SRC"/*.vmdk
-  [ "$#" -eq 1 ] && [ -f "$1" ] || fail 'Require exactly one .vmdk disk'
-  SOURCE_DISK=$1
-  verify_manifest "$SRC"
+    say 'Extracting OVA'
+    ( cd "$SRC" && tar -xf "$SOURCE_ARCHIVE" ) || fail 'OVA extraction failed'
+    set -- "$SRC"/*.ovf
+    [ "$#" -eq 1 ] && [ -f "$1" ] || fail 'Require exactly one .ovf descriptor'
+    OVF=$1
+    set -- "$SRC"/*.vmdk
+    [ "$#" -eq 1 ] && [ -f "$1" ] || fail 'Require exactly one .vmdk disk'
+    SOURCE_DISK=$1
+    verify_manifest "$SRC"
 
-  FW="$FW_DEFAULT"
-  fline=$(grep -i 'key="firmware"' "$OVF" | awk 'NR==1 {print; exit}' || true)
-  if [ -n "$fline" ]; then
-    parsed=$(printf '%s\n' "$fline" | sed -n 's/.*value="\([^"]*\)".*/\1/p')
-    if [ -n "$parsed" ]; then FW=$(printf '%s\n' "$parsed" | awk '{print tolower($0)}'); fi
-  fi
-  case "$FW" in
-    bios) ;;
-    efi|uefi) FW=efi ;;
-    *) fail "Unknown OVF firmware: $FW" ;;
-  esac
+    FW="$FW_DEFAULT"
+    fline=$(grep -i 'key="firmware"' "$OVF" | awk 'NR==1 {print; exit}' || true)
+    if [ -n "$fline" ]; then
+      parsed=$(printf '%s\n' "$fline" | sed -n 's/.*value="\([^"]*\)".*/\1/p')
+      if [ -n "$parsed" ]; then FW=$(printf '%s\n' "$parsed" | awk '{print tolower($0)}'); fi
+    fi
+    case "$FW" in
+      bios) ;;
+      efi|uefi) FW=efi ;;
+      *) fail "Unknown OVF firmware: $FW" ;;
+    esac
 
-  parse_ovf_hardware "$OVF" "$STAGE/ovf-hardware.txt"
-  parent=$(awk -F '|' '$1=="disk" {print $2; exit}' "$STAGE/ovf-hardware.txt")
-  ctl=''
-  if [ -n "$parent" ]; then
-    ctl=$(awk -F '|' -v p="$parent" '$1=="controller" && $2==p {print $3"|"$4; exit}' "$STAGE/ovf-hardware.txt")
+    parse_ovf_hardware "$OVF" "$STAGE/ovf-hardware.txt"
+    parent=$(awk -F '|' '$1=="disk" {print $2; exit}' "$STAGE/ovf-hardware.txt")
+    ctl=''
+    if [ -n "$parent" ]; then
+      ctl=$(awk -F '|' -v p="$parent" '$1=="controller" && $2==p {print $3"|"$4; exit}' "$STAGE/ovf-hardware.txt")
+    fi
+    if [ -z "$ctl" ]; then
+      ctl=$(awk -F '|' '$1=="controller" {print $3"|"$4; exit}' "$STAGE/ovf-hardware.txt")
+    fi
+    [ -n "$ctl" ] || ctl=$CTRL_DEFAULT
+    CTL_TYPE=${ctl%%|*}
+    CTL_DESC=${ctl#*|}
+    case "$CTL_TYPE" in
+      5) DISK_CTRL=ide; DISK_SUB='' ;;
+      6)
+        DISK_CTRL=scsi
+        case "$(printf '%s\n' "$CTL_DESC" | awk '{print tolower($0)}')" in
+          *pvscsi*|*paravirtual*) DISK_SUB=pvscsi ;;
+          *sas*|*virtualscsi*|*lsisas*|'') DISK_SUB=lsisas1068 ;;
+          *lsilogic*|*parallel*) DISK_SUB=lsilogic ;;
+          *) fail "Unsupported OVF SCSI controller '$CTL_DESC' (check OVF)" ;;
+        esac
+        ;;
+      *) fail "Unsupported OVF boot controller type $CTL_TYPE ($CTL_DESC); refusing to guess" ;;
+    esac
   fi
-  if [ -z "$ctl" ]; then
-    ctl=$(awk -F '|' '$1=="controller" {print $3"|"$4; exit}' "$STAGE/ovf-hardware.txt")
-  fi
-  [ -n "$ctl" ] || ctl=$CTRL_DEFAULT
-  CTL_TYPE=${ctl%%|*}
-  CTL_DESC=${ctl#*|}
-  case "$CTL_TYPE" in
-    5) DISK_CTRL=ide; DISK_SUB='' ;;
-    6)
-      DISK_CTRL=scsi
-      case "$(printf '%s\n' "$CTL_DESC" | awk '{print tolower($0)}')" in
-        *pvscsi*|*paravirtual*) DISK_SUB=pvscsi ;;
-        *sas*|*virtualscsi*|*lsisas*|'') DISK_SUB=lsisas1068 ;;
-        *lsilogic*|*parallel*) DISK_SUB=lsilogic ;;
-        *) fail "Unsupported OVF SCSI controller '$CTL_DESC' (check OVF)" ;;
-      esac
-      ;;
-    *) fail "Unsupported OVF boot controller type $CTL_TYPE ($CTL_DESC); refusing to guess" ;;
-  esac
   if [ "$IS_CHR" = 1 ]; then
     [ "$FW" = bios ] || fail "$FILE requires BIOS; OVF selected '$FW'"
     [ "$DISK_CTRL" = ide ] || fail "$FILE requires IDE boot disk; OVF selected '$DISK_CTRL'"
@@ -553,7 +572,7 @@ import_image() {
     # or unknown hardware instead of silently assuming an OVF default.
     [ "$DISK_CTRL" = scsi ] || fail "$FILE requires a SCSI boot disk; OVF selected '$DISK_CTRL'"
   fi
-  info "Boot setup from OVF: firmware=$FW, disk=$DISK_CTRL ${DISK_SUB:-}, network=vmxnet3"
+  info "Boot setup: firmware=$FW, disk=$DISK_CTRL ${DISK_SUB:-}, network=vmxnet3"
 
   say 'Converting stream VMDK to native thin VMFS disk'
   vmkfstools -i "$SOURCE_DISK" "$DISK" -d thin || fail 'VMDK conversion failed'
@@ -571,13 +590,13 @@ annotation = "ForgeMill main-template source: standalone ESXi powered-off VM; cl
 guestinfo.forgemill.role = "main-template"
 guestinfo.forgemill.image = "$kind"
 guestOS = "$GUEST"
-numvcpus = "2"
+numvcpus = "$CPU"
 memSize = "$RAM"
 firmware = "$FW"
 EOF_VMX
-  if [ "$IS_CHR" = 1 ]; then
-    # Tested operator workaround for CHR console keyboard (PS/2 IRQ handling).
-    # Do not add a virtual USB keyboard: it was not required for this fix.
+  if [ "$CHR_KEYBOARD_FIX" = 1 ]; then
+    # Only legacy 7.19.6. Do NOT apply PS/2/USB keyboard settings to the
+    # working 7.21rc6: it booted with the default VMware virtual keyboard.
     printf '%s\n' 'keyboard.allowBothIRQs = "FALSE"' >> "$VMX"
   fi
   if [ "$DISK_CTRL" = ide ]; then
@@ -605,8 +624,10 @@ tools.syncTime = "TRUE"
 EOF_NIC
 
   grep -qx 'guestinfo.forgemill.role = "main-template"' "$VMX" || fail 'Missing ForgeMill template marker'
+  if [ "$CHR_KEYBOARD_FIX" = 1 ]; then
+    grep -qx 'keyboard.allowBothIRQs = "FALSE"' "$VMX" || fail 'Missing optional CHR keyboard fix'
+  fi
   if [ "$IS_CHR" = 1 ]; then
-    grep -qx 'keyboard.allowBothIRQs = "FALSE"' "$VMX" || fail 'Missing CHR keyboard fix'
     grep -qx 'ide0:0.present = "TRUE"' "$VMX" || fail 'Missing CHR IDE boot disk'
     grep -qx 'firmware = "bios"' "$VMX" || fail 'Missing CHR legacy BIOS firmware'
   fi
@@ -617,16 +638,19 @@ EOF_NIC
     grep -qx 'scsi0:0.present = "TRUE"' "$VMX" || fail 'Malformed SCSI disk setting'
   fi
 
-  # Keep a small audit record so you can diagnose boot/OVF differences later.
-  cp "$OVF" "$STAGE/original-template.ovf"
+  # Raw VMDK has no OVF descriptor to copy.
+  if [ "$SOURCE_KIND" = ova ]; then
+    cp "$OVF" "$STAGE/original-template.ovf"
+  fi
   cat > "$STAGE/IMPORT-INFO.txt" <<EOF_IMPORT
-Imported by ForgeMill ESXi Main Template Importer v2.2
+Imported by ForgeMill ESXi Main Template Importer v2.3
 Template: $VMNAME
-OVA source: $BASE_URL/$FILE
-OVA SHA256: $OVA_SHA256
+Image source: $BASE_URL/$FILE
+Image SHA256: $IMAGE_SHA256
+Source format: $SOURCE_KIND
 Firmware: $FW
 Disk controller: $DISK_CTRL ${DISK_SUB:-}
-CHR keyboard workaround: $IS_CHR (keyboard.allowBothIRQs = FALSE when 1)
+CHR keyboard workaround: $CHR_KEYBOARD_FIX (none for 7.21rc6)
 ESXi datastore: $DS
 Network port group: $PORTGROUP
 ESXi build: $ESXI_VER
@@ -637,7 +661,7 @@ EOF_IMPORT
 
   # Remove copies only after complete image validation/conversion.
   if [ "$KEEP_SOURCE" != 1 ]; then
-    rm -f "$OVA" "$STAGE/archive-files.txt" "$STAGE/ovf-hardware.txt"
+    rm -f "$SOURCE_ARCHIVE" "$STAGE/archive-files.txt" "$STAGE/ovf-hardware.txt"
     rm -rf "$SRC"
   fi
 
@@ -658,7 +682,7 @@ EOF_IMPORT
   info "SUCCESS: $VMNAME (VMID $VMID) at $FINAL"
   info 'Registered as a powered-off, annotated ForgeMill template source; native vCenter templates require vCenter.'
   if [ "$IS_CHR" = 1 ]; then
-    warn 'CHR source uses BIOS+IDE+keyboard fix. IMPORTANT: unpatched ForgeMill ESXi fallback can change IDE to SCSI. Validate a deployed CHR VM with a fixed ForgeMill build.'
+    warn 'CHR source uses BIOS+IDE. Direct 7.21rc6 needed no keyboard flags. ForgeMill deployments may change IDE to SCSI and hardware version; test a deployed VM.'
   fi
 }
 
@@ -666,11 +690,11 @@ case "$MODE" in
   all)
     import_image ubuntu
     import_image rockyvmware
-    import_image chr7237
+    import_image chr721rc6
     ;;
   ubuntu) import_image ubuntu ;;
   rocky|rockyvmware) import_image rockyvmware ;;
-  mikrotik|chr|chr7237) import_image chr7237 ;;
+  mikrotik|chr|chr721rc6) import_image chr721rc6 ;;
   chr7196) import_image chr7196 ;;
 esac
 
