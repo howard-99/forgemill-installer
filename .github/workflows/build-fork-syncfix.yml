@@ -1,4 +1,4 @@
-name: Build patched ForgeMill image (template sync FK fix)
+name: Build patched ForgeMill image (ESXi sync + CHR IDE fixes)
 
 on:
   workflow_dispatch:
@@ -38,9 +38,21 @@ jobs:
             https://github.com/blink-zero/forgemill.git upstream
           git -C upstream rev-parse HEAD
           python3 patches/patch-forgemill-template-sync.py upstream/internal/service/target.go
+          python3 patches/patch-forgemill-esxi-ide.py upstream/internal/provider/vmware/deploy.go
           git -C upstream diff --check
           git -C upstream diff -- internal/service/target.go
           echo "VERSION=${UPSTREAM_TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Verify patched upstream Go compiles and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream
+          if command -v go >/dev/null 2>&1; then
+            go test ./internal/provider/vmware ./internal/service
+          else
+            echo 'Go toolchain missing: Docker build step will compile the upstream binary'
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -64,7 +76,7 @@ jobs:
           tags: ghcr.io/${{ github.repository_owner }}/forgemill-syncfix:${{ env.VERSION }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=ForgeMill official release with dependency-safe ESXi template synchronization
+            org.opencontainers.image.description=ForgeMill official release with FK-safe ESXi sync + preserved CHR IDE and keyboard settings
 
       - name: Explain deployment
         shell: bash
