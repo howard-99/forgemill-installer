@@ -16,37 +16,102 @@ The Rocky OVA was prepared with VMware Tools and cloud-init on a temporary Proxm
 
 CHR 7.23.7 has been reported to boot with a fresh legacy-BIOS VMDK on ESXi-188. The keyboard/PS2 IRQ setting is based on the operator's reported recovery. The CHR and Ubuntu OVA files are **not included in GitHub**; they must be served from a trusted image server, and their whole-OVA checksums should be pinned using `CHR_7237_SHA256` and `UBUNTU_SHA256` when known. Without pins, the importer logs a warning and computes informational checksums but cannot authenticate a plain-HTTP image. Image compatibility and full first-boot behavior must be tested with a clone on each host.
 
-## One-command fresh-host setup
+## Fresh ESXi bootstrap — use the local image server, not GitHub HTTPS
 
-Enable SSH in your new ESXi host's management UI, sign in as `root`, confirm the VM port group exists, and ensure it can reach your image server.
+**Problem observed on newly installed ESXi:** the ESXi BusyBox `wget`
+hangs at `Connecting to raw.githubusercontent.com (...:443)`, even though
+`ping raw.githubusercontent.com` works. DNS/ICMP reachability does not
+establish HTTPS/TLS connectivity. The importer never starts in that case.
 
-Default image URL is `http://172.31.31.183/iso`. By default the script automatically selects a mounted writable VMFS datastore with at least 12 GiB available and uses the standard port group **VM Network**.
+**Preferred reliable deployment path:** publish the installer **once** on
+the Linux/Proxmox image server (`172.31.31.183`), then install from the
+same local HTTP endpoint that is already serving the three OVAs. This
+avoids GitHub HTTPS from every ESXi host.
 
-```sh
-wget --no-check-certificate -O /tmp/forgemill-esxi-import.sh https://raw.githubusercontent.com/howard-99/forgemill-installer/main/esxi-templates/import.sh && sh -n /tmp/forgemill-esxi-import.sh && sh /tmp/forgemill-esxi-import.sh check && sh /tmp/forgemill-esxi-import.sh all && sh /tmp/forgemill-esxi-import.sh status
+### A. On the Linux image server (Proxmox 183), prepare the installer
+
+```bash
+curl -fL https://raw.githubusercontent.com/howard-99/forgemill-installer/main/esxi-templates/publish-to-image-server.sh -o /root/publish-forgemill-esxi.sh
+bash -n /root/publish-forgemill-esxi.sh
+bash /root/publish-forgemill-esxi.sh
+curl -I http://172.31.31.183/iso/forgemill-esxi-import.sh
 ```
 
-The `--no-check-certificate` workaround is only for ESXi builds that cannot validate the raw.githubusercontent.com certificate. **For a high-trust environment, download and verify the script from a pinned audited Git commit rather than running moving `main` with TLS checks disabled.** The command executes downloaded code as ESXi root and should only be used after review.
+The publisher downloads `import.sh` with certificate validation **on
+Linux**, validates POSIX syntax, computes its SHA-256, sets read permission
+for the web server, and atomically publishes to
+`/var/lib/vz/template/iso/forgemill-esxi-import.sh`. It never modifies
+VMs, the Proxmox package set or the OVA files. **Record its SHA-256 hash
+from the output and verify the same value on ESXi.** When you update
+GitHub, rerun the publisher to refresh the local script.
 
-Specify another datastore or network before the `sh ... all` command:
+For reproducible installations, pin a trusted *full* Git commit SHA
+instead of using moving `main`: set `FORGEMILL_IMPORT_REF=...` when
+running the publisher. Optional `EXPECTED_SCRIPT_SHA256=...` verifies
+the fetched installer against an independently obtained hash.
+
+If the Linux image server also cannot reach GitHub, obtain the installer
+over a working authenticated channel on another workstation and
+securely copy it into the image server's `/var/lib/vz/template/iso/`
+directory, then verify its checksum and readability before publishing.
+
+### B. One command on EACH newly installed ESXi host
+
+Enable SSH, log in as root and run:
+
+```sh
+wget -O /tmp/forgemill-esxi-import.sh http://172.31.31.183/iso/forgemill-esxi-import.sh && sh -n /tmp/forgemill-esxi-import.sh && sh /tmp/forgemill-esxi-import.sh check && sh /tmp/forgemill-esxi-import.sh all && sh /tmp/forgemill-esxi-import.sh status
+```
+
+**Before running on a production host, compare**
+`sha256sum /tmp/forgemill-esxi-import.sh` to the SHA-256 printed by
+the trusted publisher in step A; the single command is a convenience,
+not a replacement for integrity verification.
+
+This command defaults to `http://172.31.31.183/iso` for the OVAs,
+chooses a writable VMFS datastore with at least 12 GiB available,
+and uses the port group **VM Network**. All imported source VMs remain
+powered **off**.
+
+To customize the datastore, port group and image-server URL after
+downloading:
 
 ```sh
 DATASTORE='DISK1-raid1' PORTGROUP='VM Network' BASE_URL='http://172.31.31.183/iso' sh /tmp/forgemill-esxi-import.sh all
 ```
 
-In a fresh deployment with independently trusted OVA checksums:
+For stronger image-integrity protection, use independently verified hashes:
 
 ```sh
-UBUNTU_SHA256='64-char-actual-hash' CHR_7237_SHA256='64-char-actual-hash' \
-  sh /tmp/forgemill-esxi-import.sh all
+UBUNTU_SHA256='ACTUAL_64_HEX_DIGEST' CHR_7237_SHA256='ACTUAL_64_HEX_DIGEST' sh /tmp/forgemill-esxi-import.sh all
 ```
 
-**Use actual 64-character SHA-256 values**; the placeholders above are not valid. For independently measured hashes on the image server:
+Replace both placeholders with the actual hashes; otherwise omit those
+variables (the script warns for unsigned/unpinned HTTP sources). The
+Rocky OVA is pinned by default.
 
-```sh
+On the image server, obtain hashes with:
+
+```bash
 cd /var/lib/vz/template/iso
 sha256sum ubuntu-24.04-server-cloudimg-amd64.ova chr-7.23.7-legacy-bios.ova rocky-9.8-forgemill-vmware.ova
 ```
+
+### C. If the local HTTP download also fails
+
+On the ESXi host, test directly:
+
+```sh
+ping -c 2 172.31.31.183
+wget -O /tmp/forgemill-esxi-import.sh http://172.31.31.183/iso/forgemill-esxi-import.sh
+ls -lh /tmp/forgemill-esxi-import.sh
+```
+
+If the HTTP request times out, verify the image server is listening
+on TCP 80 and that the ESXi management network can route to it.
+A successful ping to GitHub says nothing about the TCP connection
+to GitHub's port 443. Do not disable ESXi's firewall globally,
+change DNS at random, or use an unauthenticated third-party script mirror.
 
 ## Individual operations
 
