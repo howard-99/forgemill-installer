@@ -1,5 +1,5 @@
 #!/bin/sh
-# ForgeMill ESXi Main Template Importer — v2.1
+# ForgeMill ESXi Main Template Importer — v2.2
 # ESXi 7.x / 8.x BusyBox/POSIX sh; no external VM management workstation required.
 # Usage: sh forgemill-esxi-import.sh [all|ubuntu|rocky|mikrotik|chr7196|check|status]
 # Imported VMs remain powered OFF. Nothing registered or stored previously is deleted.
@@ -356,12 +356,15 @@ import_image() {
   kind=$1
   IS_CHR=0
   EXPECTED_SHA256=''
+  # VMX guestOS values MUST use VMware .vmx identifiers, not vSphere API
+  # enums (*Guest). Example: otherlinux-64, NOT otherLinux64Guest.
+  # See vmware/open-vm-tools/lib/include/guest_os_tables.h.
   case "$kind" in
     ubuntu)
       VMNAME='Template-Ubuntu-24.04'
       LEGACY_NAMES='ubuntu-24.04-main-template ubuntu-24.04-golden'
       FILE='ubuntu-24.04-server-cloudimg-amd64.ova'
-      GUEST='ubuntu64Guest'
+      GUEST='ubuntu-64'
       RAM=2048
       FW_DEFAULT=bios
       CTRL_DEFAULT='6|VirtualSCSI'
@@ -372,7 +375,7 @@ import_image() {
       VMNAME='Template-MikroTik-CHR-7.19.6'
       LEGACY_NAMES='mikrotik-chr-7.19.6-main-template mikrotik-chr-7.19.6-golden'
       FILE='chr-7.19.6-legacy-bios.ova'
-      GUEST='otherLinux64Guest'
+      GUEST='otherlinux-64'
       RAM=1024
       FW_DEFAULT=bios
       CTRL_DEFAULT='5|IDE'
@@ -383,7 +386,7 @@ import_image() {
       VMNAME='Template-MikroTik-CHR-7.23.7'
       LEGACY_NAMES='mikrotik-chr-7.23.7-main-template mikrotik-chr-7.23.7-golden'
       FILE='chr-7.23.7-legacy-bios.ova'
-      GUEST='otherLinux64Guest'
+      GUEST='otherlinux-64'
       RAM=1024
       FW_DEFAULT=bios
       CTRL_DEFAULT='5|IDE'
@@ -394,13 +397,20 @@ import_image() {
       VMNAME='Template-Rocky-9.8'
       LEGACY_NAMES='rocky-9.8-forgemill-main-template rocky-9.8-forgemill-golden rocky-9.8-main-template rocky-9.8-golden'
       FILE='rocky-9.8-forgemill-vmware.ova'
-      GUEST='otherLinux64Guest'
+      GUEST='otherlinux-64'
       RAM=2048
       FW_DEFAULT=bios
       CTRL_DEFAULT='6|pvscsi'
       # Verified OVA from Proxmox VM 100, deployed successfully by operator.
       EXPECTED_SHA256=${ROCKY_VMWARE_SHA256:-2a58c89a81b456e6c90cdae6d2d23152799cd137a42207d50b40d538b4274f33}
       ;;
+  esac
+
+  # Fail closed if an API GuestOsIdentifier enum is accidentally supplied.
+  # These values are written into raw VMX configuration, not a vSphere API call.
+  case "$GUEST" in
+    ubuntu-64|otherlinux-64) ;;
+    *) fail "Invalid raw VMX guestOS identifier: $GUEST" ;;
   esac
 
   say "Import: $VMNAME"
@@ -610,7 +620,7 @@ EOF_NIC
   # Keep a small audit record so you can diagnose boot/OVF differences later.
   cp "$OVF" "$STAGE/original-template.ovf"
   cat > "$STAGE/IMPORT-INFO.txt" <<EOF_IMPORT
-Imported by ForgeMill ESXi Main Template Importer v2.1
+Imported by ForgeMill ESXi Main Template Importer v2.2
 Template: $VMNAME
 OVA source: $BASE_URL/$FILE
 OVA SHA256: $OVA_SHA256
