@@ -22,7 +22,9 @@ jobs:
 
       - name: Run SQLite and source patch regression tests
         shell: bash
-        run: python3 -m unittest discover -s tests -p test_template_sync_fix.py -v
+        run: |
+          python3 -m unittest discover -s tests -p test_template_sync_fix.py -v
+          python3 -m unittest discover -s tests -p test_template_sync_guard.py -v
 
       - name: Validate release tag and fetch official source
         shell: bash
