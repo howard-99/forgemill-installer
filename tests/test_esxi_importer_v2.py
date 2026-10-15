@@ -57,6 +57,23 @@ class ESXiImporterTests(unittest.TestCase):
         self.assertIn("FILE='ubuntu-24.04-server-cloudimg-amd64.ova'", self.text)
         self.assertIn("EXPECTED_SHA256=${UBUNTU_SHA256:-}", self.text)
 
+    def test_chr_keyboard_repair_uses_busybox_compatible_vim_cmd_lookup(self):
+        rescue = (ROOT / "esxi-templates" / "fix-chr-console-keyboard.sh").read_text(
+            encoding="utf-8"
+        )
+        subprocess.run(
+            ["sh", "-n", str(ROOT / "esxi-templates" / "fix-chr-console-keyboard.sh")],
+            check=True,
+        )
+        self.assertIn("for candidate in /bin/vim-cmd /sbin/vim-cmd", rescue)
+        self.assertNotIn("command -v vim-cmd", rescue.split("VIM_CMD=''")[1])
+        self.assertIn('VMID=$2', rescue)
+        self.assertIn("Refusing to change source VM named", rescue)
+        self.assertIn("marked as a ForgeMill main-template", rescue)
+        self.assertIn("Power off the DEPLOYED TEST VM", rescue)
+        self.assertIn('cp "$VMX" "$BACKUP"', rescue)
+        self.assertIn('"$VIM_CMD" vmsvc/reload "$VMID"', rescue)
+
     def test_critical_data_protections(self):
         for text in [
             "vmkfstools -e", "verify_manifest", "tar -tvf",
