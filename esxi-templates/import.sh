@@ -1,7 +1,7 @@
 #!/bin/sh
-# ForgeMill ESXi Main Template Importer — v2.0
+# ForgeMill ESXi Main Template Importer — v2.1
 # ESXi 7.x / 8.x BusyBox/POSIX sh; no external VM management workstation required.
-# Usage: sh forgemill-esxi-import.sh [all|ubuntu|rocky|mikrotik|check|status]
+# Usage: sh forgemill-esxi-import.sh [all|ubuntu|rocky|mikrotik|chr7196|check|status]
 # Imported VMs remain powered OFF. Nothing registered or stored previously is deleted.
 set -eu
 
@@ -27,7 +27,7 @@ warn() { printf '[WARN] %s\n' "$*" >&2; }
 fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
 case "$MODE" in
-  all|ubuntu|rocky|rockyvmware|chr|mikrotik|chr7237|check|status) ;;
+  all|ubuntu|rocky|rockyvmware|chr|mikrotik|chr7237|chr7196|check|status) ;;
   -h|--help|help)
     cat <<'HELP'
 Usage: sh forgemill-esxi-import.sh [MODE]
@@ -35,6 +35,7 @@ Usage: sh forgemill-esxi-import.sh [MODE]
   ubuntu    Import Ubuntu 24.04 only
   rocky     Import tested Rocky 9.8 VMware OVA only (alias rockyvmware)
   mikrotik  Import CHR 7.23.7 Legacy BIOS only (aliases chr, chr7237)
+  chr7196   Import CHR 7.19.6 Legacy BIOS as an OPTIONAL test template
   check     Display datastores/VM networks and selected target datastore
   status    Display registered virtual machines; no changes
 
@@ -47,6 +48,7 @@ Optional environment variables:
   KEEP_FAILED=1          Preserve failed staging directory for diagnostics
   UBUNTU_SHA256=...      Recommended trusted OVA SHA256 for Ubuntu 24.04
   CHR_7237_SHA256=...    Recommended trusted OVA SHA256 for CHR 7.23.7
+  CHR_7196_SHA256=...    Recommended trusted OVA SHA256 for CHR 7.19.6
   ROCKY_VMWARE_SHA256=... Override pinned Rocky 9.8 SHA256 if rebuilt
   WGET_NO_CHECK_CERT=1   Bypass TLS certificate validation for HTTPS OVA only (insecure)
 
@@ -59,7 +61,7 @@ boot disks as SCSI and lose CHR keyboard settings. Import alone does not
 repair ForgeMill's cloning code; test a CHR deployment before production.
 HELP
     exit 0 ;;
-  *) fail "Unknown mode '$MODE'. Use all, ubuntu, rocky, mikrotik, chr, chr7237, rockyvmware, check or status." ;;
+  *) fail "Unknown mode '$MODE'. Use all, ubuntu, rocky, mikrotik, chr, chr7237, chr7196, rockyvmware, check or status." ;;
 esac
 
 # ESXi 7 may expose commands in different directories and some BusyBox
@@ -104,7 +106,7 @@ if [ "$MODE" = status ]; then
   say 'VM inventory and ForgeMill main-template sources'
   inventory=$(vim-cmd vmsvc/getallvms) || fail 'Cannot list ESXi VMs'
   printf '%s\n' "$inventory"
-  for name in Template-Ubuntu-24.04 Template-Rocky-9.8 Template-MikroTik-CHR-7.23.7; do
+  for name in Template-Ubuntu-24.04 Template-Rocky-9.8 Template-MikroTik-CHR-7.23.7 Template-MikroTik-CHR-7.19.6; do
     id=$(printf '%s\n' "$inventory" | awk -v n="$name" '$1 ~ /^[0-9]+$/ && $2==n {print $1; exit}')
     if [ -z "$id" ]; then
       info "NOT FOUND: $name"
@@ -217,7 +219,8 @@ case "$WGET_NO_CHECK_CERT" in 0|1) ;; *) fail 'WGET_NO_CHECK_CERT must be 0 or 1
 
 if [ "$MODE" = check ]; then
   say 'Preflight PASS'
-  info "OVAs under $BASE_URL: ubuntu-24.04-server-cloudimg-amd64.ova, rocky-9.8-forgemill-vmware.ova, chr-7.23.7-legacy-bios.ova"
+  info "Default all OVAs under $BASE_URL: ubuntu-24.04-server-cloudimg-amd64.ova, rocky-9.8-forgemill-vmware.ova, chr-7.23.7-legacy-bios.ova"
+  info "Optional chr7196 OVA: $BASE_URL/chr-7.19.6-legacy-bios.ova (NOT part of all)"
   info 'No image files downloaded or boot-tested in check mode.'
   info 'No VMs were changed.'
   exit 0
@@ -363,6 +366,18 @@ import_image() {
       FW_DEFAULT=bios
       CTRL_DEFAULT='6|VirtualSCSI'
       EXPECTED_SHA256=${UBUNTU_SHA256:-}
+      ;;
+    chr7196)
+      # Opt-in only for ESXi 192 troubleshooting. Never change default all.
+      VMNAME='Template-MikroTik-CHR-7.19.6'
+      LEGACY_NAMES='mikrotik-chr-7.19.6-main-template mikrotik-chr-7.19.6-golden'
+      FILE='chr-7.19.6-legacy-bios.ova'
+      GUEST='otherLinux64Guest'
+      RAM=1024
+      FW_DEFAULT=bios
+      CTRL_DEFAULT='5|IDE'
+      IS_CHR=1
+      EXPECTED_SHA256=${CHR_7196_SHA256:-}
       ;;
     chr7237)
       VMNAME='Template-MikroTik-CHR-7.23.7'
@@ -595,7 +610,7 @@ EOF_NIC
   # Keep a small audit record so you can diagnose boot/OVF differences later.
   cp "$OVF" "$STAGE/original-template.ovf"
   cat > "$STAGE/IMPORT-INFO.txt" <<EOF_IMPORT
-Imported by ForgeMill ESXi Main Template Importer v2.0
+Imported by ForgeMill ESXi Main Template Importer v2.1
 Template: $VMNAME
 OVA source: $BASE_URL/$FILE
 OVA SHA256: $OVA_SHA256
@@ -646,6 +661,7 @@ case "$MODE" in
   ubuntu) import_image ubuntu ;;
   rocky|rockyvmware) import_image rockyvmware ;;
   mikrotik|chr|chr7237) import_image chr7237 ;;
+  chr7196) import_image chr7196 ;;
 esac
 
 say 'Final ESXi virtual machine inventory'
