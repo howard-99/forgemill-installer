@@ -1,0 +1,33 @@
+name: Verify ESXi three-template installer
+
+on:
+  push:
+    paths:
+      - 'esxi-templates/import.sh'
+      - 'esxi-templates/README.md'
+      - 'tests/test_esxi_importer_v2.py'
+      - '.github/workflows/verify-esxi-importer.yml'
+  pull_request:
+    paths:
+      - 'esxi-templates/**'
+      - 'tests/test_esxi_importer_v2.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax-and-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: POSIX shell syntax
+        run: sh -n esxi-templates/import.sh
+      - name: Three-template regression tests
+        run: python3 -m unittest discover -s tests -p test_esxi_importer_v2.py -v
+      - name: ShellCheck (if available)
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck -s sh -S warning esxi-templates/import.sh
+          fi
