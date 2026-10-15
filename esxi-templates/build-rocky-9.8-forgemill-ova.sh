@@ -56,9 +56,38 @@ PasswordAuthentication yes
 PermitRootLogin no
 EOF_SSH
 
+# libguestfs runs DNF inside its own QEMU appliance, not the builder's
+# network namespace. The cloud image can have a missing/stub resolv.conf,
+# so temporarily supply reachable resolvers only while DNF runs.
+# Restore the original resolv.conf before preparing the template.
+cat > "$WORK/install-packages.sh" <<'EOF_PACKAGES'
+#!/bin/sh
+set -eu
+backed_up=0
+if [ -e /etc/resolv.conf ] || [ -L /etc/resolv.conf ]; then
+  mv /etc/resolv.conf /etc/resolv.conf.forgemill-build-backup
+  backed_up=1
+fi
+restore_resolver() {
+  rm -f /etc/resolv.conf
+  if [ "$backed_up" -eq 1 ]; then
+    mv /etc/resolv.conf.forgemill-build-backup /etc/resolv.conf
+  fi
+}
+trap restore_resolver EXIT
+printf '%s\\n' 'nameserver 1.1.1.1' 'nameserver 8.8.8.8' > /etc/resolv.conf
+echo '[rocky-build] Checking DNS inside the libguestfs guest environment'
+getent ahostsv4 mirrors.rockylinux.org >/dev/null || {
+  echo '[rocky-build] Guest DNS failed even with explicit resolvers; check libguestfs QEMU user networking/firewall' >&2
+  exit 1
+}
+echo '[rocky-build] Guest DNS OK; installing VMware dependencies'
+dnf -y install cloud-init open-vm-tools NetworkManager openssh-server sudo
+EOF_PACKAGES
+chmod 700 "$WORK/install-packages.sh"
 info 'Installing VMware tools, cloud-init and DHCP/SSH integration'
-virt-customize -a "$QCOW2" \
- --install 'cloud-init,open-vm-tools,NetworkManager,openssh-server,sudo' \
+virt-customize --network -a "$QCOW2" \
+ --run "$WORK/install-packages.sh" \
  --mkdir /etc/ssh/sshd_config.d \
  --copy-in "$WORK/91-forgemill-vmware.cfg:/etc/cloud/cloud.cfg.d" \
  --copy-in "$WORK/90-forgemill-fallback.nmconnection:/etc/NetworkManager/system-connections" \
