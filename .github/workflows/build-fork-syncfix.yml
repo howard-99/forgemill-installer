@@ -20,6 +20,10 @@ jobs:
       - name: Checkout installer patch files
         uses: actions/checkout@v4
 
+      - name: Run SQLite and source patch regression tests
+        shell: bash
+        run: python3 -m unittest discover -s tests -p test_template_sync_fix.py -v
+
       - name: Validate release tag and fetch official source
         shell: bash
         env:
