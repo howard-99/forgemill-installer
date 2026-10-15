@@ -2,7 +2,7 @@
 
 A standalone BusyBox/POSIX-shell importer for **VMware ESXi 7.x/8.x**. It prepares powered-off main-template source VMs for discovery by [ForgeMill](https://github.com/blink-zero/forgemill), without installing Python, Docker, or OVF Tool on the ESXi host.
 
-This is the **v1.6 importer (previous v1.4 tested on ESXi 7.0.3; current four-image installation still requires ESXi validation)** by the project operator. Other hardware, OVA variants and ESXi releases should be tested before production use.
+This is the **v1.7 importer (previous v1.4 tested on ESXi 7.0.3; new Rocky VMware candidate still requires ESXi validation)** by the project operator. Other hardware, OVA variants and ESXi releases should be tested before production use.
 
 ## Images
 
@@ -13,6 +13,7 @@ This is the **v1.6 importer (previous v1.4 tested on ESXi 7.0.3; current four-im
 | `chr7237` | `mikrotik-chr-7.23.7-main-template` | `chr-7.23.7-legacy-bios.ova` |
 | `chr` / `mikrotik` | Both MikroTik legacy BIOS images | Both OVAs |
 | `rocky` | `rocky-9.8-main-template` | `rocky-9.8.ova` |
+| `rockyvmware` (opt-in) | `rocky-9.8-forgemill-main-template` | `rocky-9.8-forgemill-vmware.ova` |
 | `all` | Ubuntu + Rocky + both CHR images | Four OVA files |
 
 **OVAs are not included**. Host your own legal, trusted images on an HTTP(S) server accessible from each ESXi management network. The initial default is `http://172.31.31.183/iso` (a private LAN address from the original deployment); **override `BASE_URL` on other networks**.
@@ -33,6 +34,7 @@ Then import only the desired image(s):
 sh /tmp/forgemill-esxi-import.sh all
 # or:
 sh /tmp/forgemill-esxi-import.sh rocky
+sh /tmp/forgemill-esxi-import.sh rockyvmware  # candidate; separate from 'all'
 sh /tmp/forgemill-esxi-import.sh chr
 sh /tmp/forgemill-esxi-import.sh chr7196
 sh /tmp/forgemill-esxi-import.sh chr7237
@@ -60,7 +62,19 @@ The installer selects a writable mounted VMFS datastore with the most available 
 BASE_URL='http://YOUR-IMAGE-SERVER/iso' PORTGROUP='VM Network' DATASTORE='DISK1-raid1' sh /tmp/forgemill-esxi-import.sh all
 ```
 
-Optional settings: `BASE_URL`, `PORTGROUP`, `DATASTORE`, `MIN_FREE_GB`, `KEEP_SOURCE=1`, `KEEP_FAILED=1`, `CHR_7196_SHA256`, `CHR_7237_SHA256`, `WGET_NO_CHECK_CERT=1` (only for HTTPS OVA downloads; insecure). The initial GitHub script download requires its own `--no-check-certificate` flag on affected ESXi builds.
+Optional settings: `BASE_URL`, `PORTGROUP`, `DATASTORE`, `MIN_FREE_GB`, `KEEP_SOURCE=1`, `KEEP_FAILED=1`, `CHR_7196_SHA256`, `CHR_7237_SHA256`, `ROCKY_VMWARE_SHA256`, `WGET_NO_CHECK_CERT=1` (only for HTTPS OVA downloads; insecure). The initial GitHub script download requires its own `--no-check-certificate` flag on affected ESXi builds.
+
+## Rocky 9.8 VMware test candidate (not enabled in `all`)
+
+The separate `rockyvmware` mode imports an ESXi-ready OVA built on Proxmox from Rocky 9.8 GenericCloud and prepared for VMware GuestInfo-based cloud-init. Default OVA: `rocky-9.8-forgemill-vmware.ova`. The import source is `rocky-9.8-forgemill-main-template` and does NOT replace `rocky-9.8-main-template` or `rocky-9.8-golden`.
+
+The known exported test file SHA-256 is `2a58c89a81b456e6c90cdae6d2d23152799cd137a42207d50b40d538b4274f33`; it is enforced by default in this mode. When you rebuild, supply the new verified value using `ROCKY_VMWARE_SHA256=...`.
+
+Source prep and export builder scripts:
+- [Build from GenericCloud on Ubuntu](build-rocky-9.8-forgemill-ova.sh) (legacy alternative, libguestfs may lack networking)
+- [Export preconfigured, stopped Proxmox VM 100 to ESXi OVA](export-rocky-9.8-from-proxmox.sh) (current approach)
+
+Never boot the registered source itself before cloning it: doing so may consume first-boot cloud-init state without deployment credentials. Boot a clone through ForgeMill; verify VMX firmware BIOS, PVSCSI boot, VMXNET3, VMware Tools IP reporting, DHCP address, and generated `forgemill` user login. The VMX is only a powered-off source; these outcomes are not proven yet. A pre-existing `rocky` local account may still exist on the prepared disk but no authorized key/password is intentionally provided to access it; audit the entire image before distributing to customers.
 
 ## MikroTik CHR compatibility and keyboard fix
 
