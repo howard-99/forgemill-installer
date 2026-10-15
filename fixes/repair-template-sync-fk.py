@@ -188,6 +188,9 @@ def main() -> int:
     # temporarily leave the database without either guard if it fails.
     with sqlite3.connect(str(SOURCE), timeout=30) as live:
         live.execute("PRAGMA foreign_keys=ON")
+        # Explicit transaction is essential: Python sqlite3's legacy mode
+        # does not start an implicit transaction for DROP/CREATE TRIGGER.
+        live.execute("BEGIN IMMEDIATE")
         if existing_sql:
             live.execute(f"DROP TRIGGER {qi(NAME)}")
         if args.apply:
