@@ -1,7 +1,7 @@
 #!/bin/sh
-# ForgeMill ESXi Main Template Importer — v1.6
+# ForgeMill ESXi Main Template Importer — v1.7
 # ESXi 7.x / 8.x BusyBox/POSIX sh; no external VM management workstation required.
-# Usage: sh forgemill-esxi-import.sh [all|ubuntu|chr|chr7196|chr7237|rocky|check|status]
+# Usage: sh forgemill-esxi-import.sh [all|ubuntu|chr|chr7196|chr7237|rocky|rockyvmware|check|status]
 # Imported VMs remain powered OFF. Nothing registered or stored previously is deleted.
 set -eu
 
@@ -27,7 +27,7 @@ warn() { printf '[WARN] %s\n' "$*" >&2; }
 fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
 case "$MODE" in
-  all|ubuntu|chr|mikrotik|chr7196|chr7237|rocky|check|status) ;;
+  all|ubuntu|chr|mikrotik|chr7196|chr7237|rocky|rockyvmware|check|status) ;;
   -h|--help|help)
     cat <<'HELP'
 Usage: sh forgemill-esxi-import.sh [MODE]
@@ -36,7 +36,8 @@ Usage: sh forgemill-esxi-import.sh [MODE]
   chr       Import BOTH tested MikroTik Legacy BIOS images (alias mikrotik)
   chr7196   Import MikroTik CHR 7.19.6 Legacy BIOS only
   chr7237   Import MikroTik CHR 7.23.7 Legacy BIOS only
-  rocky     Import Rocky Linux 9.8 only
+  rocky     Import existing Rocky Linux 9.8 OVA only
+  rockyvmware  Import NEW VMware-ready Rocky 9.8 candidate only (not in all)
   check     Display datastores/VM networks and selected target datastore
   status    Display registered virtual machines; no changes
 
@@ -49,6 +50,7 @@ Optional environment variables:
   KEEP_FAILED=1          Preserve failed staging directory for diagnostics
   CHR_7196_SHA256=...    Optional trusted OVA SHA256 for CHR 7.19.6
   CHR_7237_SHA256=...    Optional trusted OVA SHA256 for CHR 7.23.7
+  ROCKY_VMWARE_SHA256=... Override known test OVA SHA256 if image is rebuilt
   WGET_NO_CHECK_CERT=1   Bypass TLS certificate validation for HTTPS OVA only (insecure)
 
 Safety: never overwrite existing templates, delete original VM disks, change
@@ -59,7 +61,7 @@ WARNING: ForgeMill's upstream standalone-ESXi fallback may recreate IDE
 boot disks as SCSI disks. Import alone does not fix that cloning bug.
 HELP
     exit 0 ;;
-  *) fail "Unknown mode '$MODE'. Use all, ubuntu, chr, chr7196, chr7237, rocky, check or status." ;;
+  *) fail "Unknown mode '$MODE'. Use all, ubuntu, chr, chr7196, chr7237, rocky, rockyvmware, check or status." ;;
 esac
 
 # ESXi 7 may expose commands in different directories and some BusyBox
@@ -104,7 +106,7 @@ if [ "$MODE" = status ]; then
   say 'VM inventory and ForgeMill main-template sources'
   inventory=$(vim-cmd vmsvc/getallvms) || fail 'Cannot list ESXi VMs'
   printf '%s\n' "$inventory"
-  for name in ubuntu-24.04-main-template rocky-9.8-main-template mikrotik-chr-7.19.6-main-template mikrotik-chr-7.23.7-main-template; do
+  for name in ubuntu-24.04-main-template rocky-9.8-main-template rocky-9.8-forgemill-main-template mikrotik-chr-7.19.6-main-template mikrotik-chr-7.23.7-main-template; do
     id=$(printf '%s\n' "$inventory" | awk -v n="$name" '$1 ~ /^[0-9]+$/ && $2==n {print $1; exit}')
     if [ -z "$id" ]; then
       info "NOT FOUND: $name"
@@ -217,7 +219,7 @@ case "$WGET_NO_CHECK_CERT" in 0|1) ;; *) fail 'WGET_NO_CHECK_CERT must be 0 or 1
 
 if [ "$MODE" = check ]; then
   say 'Preflight PASS'
-  info "OVAs under $BASE_URL: ubuntu-24.04-server-cloudimg-amd64.ova, rocky-9.8.ova, chr-7.19.6-legacy-bios.ova, chr-7.23.7-legacy-bios.ova"
+  info "OVAs under $BASE_URL: ubuntu-24.04-server-cloudimg-amd64.ova, rocky-9.8.ova, rocky-9.8-forgemill-vmware.ova (candidate), chr-7.19.6-legacy-bios.ova, chr-7.23.7-legacy-bios.ova"
   info 'No image files downloaded or boot-tested in check mode.'
   info 'No VMs were changed.'
   exit 0
@@ -394,6 +396,19 @@ import_image() {
       FW_DEFAULT=bios
       CTRL_DEFAULT='6|VirtualSCSI'
       ;;
+    rockyvmware)
+      # Independent candidate. Protect prior rocky-9.8-golden / main-template.
+      VMNAME='rocky-9.8-forgemill-main-template'
+      LEGACY_VMNAME='rocky-9.8-forgemill-golden'
+      FILE='rocky-9.8-forgemill-vmware.ova'
+      GUEST='otherLinux64Guest'
+      RAM=2048
+      FW_DEFAULT=bios
+      CTRL_DEFAULT='6|pvscsi'
+      # SHA256 of verified user-built OVA from Proxmox VM 100 (2026-10-15).
+      # Set ROCKY_VMWARE_SHA256 when rebuilding the OVA with different bytes.
+      EXPECTED_SHA256=${ROCKY_VMWARE_SHA256:-2a58c89a81b456e6c90cdae6d2d23152799cd137a42207d50b40d538b4274f33}
+      ;;
   esac
 
   say "Import: $VMNAME"
@@ -523,6 +538,10 @@ import_image() {
     [ "$FW" = bios ] || fail "$FILE requires BIOS; OVF selected '$FW'"
     [ "$DISK_CTRL" = ide ] || fail "$FILE requires IDE boot disk; OVF selected '$DISK_CTRL'"
   fi
+  if [ "$kind" = rockyvmware ]; then
+    [ "$FW" = bios ] || fail "$FILE requires BIOS; OVF selected '$FW'"
+    [ "$DISK_CTRL" = scsi ] && [ "$DISK_SUB" = pvscsi ] || fail "$FILE requires PVSCSI boot disk; OVF selected '$DISK_CTRL ${DISK_SUB:-}'"
+  fi
   info "Boot setup from OVF: firmware=$FW, disk=$DISK_CTRL ${DISK_SUB:-}, network=vmxnet3"
 
   say 'Converting stream VMDK to native thin VMFS disk'
@@ -590,7 +609,7 @@ EOF_NIC
   # Keep a small audit record so you can diagnose boot/OVF differences later.
   cp "$OVF" "$STAGE/original-template.ovf"
   cat > "$STAGE/IMPORT-INFO.txt" <<EOF_IMPORT
-Imported by ForgeMill ESXi Main Template Importer v1.6
+Imported by ForgeMill ESXi Main Template Importer v1.7
 Template: $VMNAME
 OVA source: $BASE_URL/$FILE
 OVA SHA256: $OVA_SHA256
@@ -647,6 +666,7 @@ case "$MODE" in
   chr7196) import_image chr7196 ;;
   chr7237) import_image chr7237 ;;
   rocky) import_image rocky ;;
+  rockyvmware) import_image rockyvmware ;;
 esac
 
 say 'Final ESXi virtual machine inventory'
