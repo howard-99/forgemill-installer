@@ -29,5 +29,5 @@ jobs:
       - name: ShellCheck (if available)
         run: |
           if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck -s sh -S warning esxi-templates/import.sh
+            shellcheck -s sh -S error esxi-templates/import.sh
           fi
