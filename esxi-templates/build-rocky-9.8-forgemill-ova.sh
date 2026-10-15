@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Build ESXi-ready Rocky 9.8 OVA from official GenericCloud QCOW2.
-# Run on Linux/Proxmox image server 172.31.31.183, never on ESXi.
+# Run in a separate Ubuntu/Debian build VM, NOT directly on Proxmox or ESXi.
+# Copy the output OVA back to the Proxmox image server after building.
 set -Eeuo pipefail
 umask 077
-ISO_DIR=${ISO_DIR:-/var/lib/vz/template/iso}
+ISO_DIR=${ISO_DIR:-/srv/forgemill-images}
 SOURCE=${SOURCE:-$ISO_DIR/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2}
 WORK=${WORK:-$ISO_DIR/forgemill-rocky-9.8-build}
 NAME=rocky-9.8-forgemill-vmware
@@ -15,7 +16,10 @@ OUTPUT=$ISO_DIR/$NAME.ova
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
-[[ $EUID -eq 0 ]] || die 'Run as root on Proxmox'
+[[ $EUID -eq 0 ]] || die 'Run as root in an isolated Linux build VM'
+if command -v pveversion >/dev/null 2>&1; then
+  die 'Refusing to run directly on a Proxmox VE host; use a temporary Ubuntu build VM'
+fi
 [[ -f "$SOURCE" ]] || die "Missing source QCOW2: $SOURCE"
 [[ ! -e "$OUTPUT" && ! -e "$WORK" ]] || die 'Output or build directory exists; no overwrite'
 for exe in qemu-img virt-customize virt-inspector python3 sha256sum cp; do
