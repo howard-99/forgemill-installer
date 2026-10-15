@@ -33,6 +33,15 @@ for exe in qemu-img virt-customize virt-inspector python3 sha256sum cp; do
   command -v "$exe" >/dev/null || die "Missing $exe; apt install qemu-utils libguestfs-tools python3"
 done
 
+# libguestfs' supermin appliance uses the build VM's dhcpcd binary to
+# obtain a QEMU SLIRP DHCP lease. Missing dhcpcd means NO IPv4/route/DNS.
+if ! [ -x /usr/sbin/dhcpcd ] && ! command -v dhcpcd >/dev/null 2>&1; then
+  die 'Missing dhcpcd-base on build VM. Run: apt-get install -y --no-install-recommends dhcpcd-base (NOT on Proxmox host).'
+fi
+if [ ! -e /dev/kvm ]; then
+  echo '[WARN] /dev/kvm not available: libguestfs uses slow QEMU software emulation (TCG). Enable nested virtualization on the Ubuntu build VM if desired.' >&2
+fi
+
 info "Appliance resources: ${BUILD_VCPUS} vCPUs, ${BUILD_RAM_MB} MB RAM"
 info 'Validating source QCOW2'
 qemu-img info -f qcow2 "$SOURCE"
