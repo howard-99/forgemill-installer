@@ -3,6 +3,8 @@ name: Verify ESXi three-template installer
 on:
   push:
     paths:
+      - 'README.md'
+      - 'tests/test_readme_priority.py'
       - 'esxi-templates/import.sh'
       - 'esxi-templates/publish-to-image-server.sh'
       - 'esxi-templates/README.md'
@@ -10,6 +12,8 @@ on:
       - '.github/workflows/verify-esxi-importer.yml'
   pull_request:
     paths:
+      - 'README.md'
+      - 'tests/test_readme_priority.py'
       - 'esxi-templates/**'
       - 'tests/test_esxi_importer_v2.py'
   workflow_dispatch:
@@ -23,6 +27,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Verify Ubuntu installer stays first in README
+        run: python3 -m unittest discover -s tests -p test_readme_priority.py -v
       - name: POSIX shell syntax
         run: sh -n esxi-templates/import.sh
       - name: Image-server publisher Bash syntax
