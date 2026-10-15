@@ -177,24 +177,44 @@ automatically reversible.
 
 **Immediate, temporary workaround for the current running release:**
 [fixes/repair-template-sync-fk.py](fixes/repair-template-sync-fk.py) installs
-a reversible SQLite BEFORE DELETE trigger for one target that **skips only
-deletes of templates referenced by declared SQLite foreign keys**. It does
-not flag external templates as Factory-managed or delete deployment history.
-Only use until the patched application is deployed.
+an **all-target** SQLite `BEFORE DELETE` guard. It skips only deletion of
+templates referenced by declared SQLite foreign keys. Unlike the earlier
+single-target workaround, it protects ESXi-188, ESXi-192 and other future
+targets. The script safely upgrades the older scoped guard if it exists.
+It does not change the application binary, mark templates Factory-managed,
+remove deployment history or discard existing templates.
+
+Run on the **Ubuntu ForgeMill control-plane server** as root, not ESXi.
+Do not modify the database while the container runs. First download the
+script and examine the read-only output:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/howard-99/forgemill-installer/main/fixes/repair-template-sync-fk.py -o /root/repair-template-sync-fk.py
-sudo python3 /root/repair-template-sync-fk.py --target-id 1      # read-only
-sudo docker stop --time 45 forgemill
-sudo python3 /root/repair-template-sync-fk.py --apply --target-id 1
-sudo docker start forgemill
+python3 -m py_compile /root/repair-template-sync-fk.py
+sudo python3 /root/repair-template-sync-fk.py
 ```
 
-The apply step creates a consistent timestamped backup in
-`/opt/forgemill/backups` **before changing the database schema**, checks
-integrity, and refuses to modify it if the container is running. Follow the
-logs after trying Sync. After the patched application is proven working,
-stop ForgeMill, run `sudo python3 /root/repair-template-sync-fk.py --remove
---target-id 1`, and start it again. Never delete your existing DB, disable
-SQLite foreign keys, or modify the historical deployment IDs to force sync.
+Only when preflight reports `Integrity: ok; foreign_key_check: ok`, and
+there are no deployments or builds in progress:
+
+```bash
+sudo docker stop --time 45 forgemill
+sudo python3 /root/repair-template-sync-fk.py --apply
+sudo docker start forgemill
+sudo docker logs --since 5m --tail 100 forgemill
+```
+
+If apply fails, **restart the container before further troubleshooting**.
+The change creates a verified, timestamped SQLite backup under
+`/opt/forgemill/backups` before modifying schema and refuses to modify
+the database unless Docker confirms ForgeMill is stopped. Retest
+`Sync Templates` for your ESXi target.
+
+**Permanent resolution requires building and installing the patched
+ForgeMill application image** using the workflow above. A GitHub
+repository commit or an ESXi-side template import does not update the
+currently running container. After the permanent image is deployed,
+sync is verified and a backup is retained, stop ForgeMill and run
+`sudo python3 /root/repair-template-sync-fk.py --remove`, then restart.
+Never delete history or disable SQLite foreign keys to force sync.
 
