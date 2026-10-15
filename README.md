@@ -4,6 +4,80 @@ A lightweight installer for [ForgeMill](https://github.com/blink-zero/forgemill/
 
 See [operational notes](NOTES.md) for storage, credentials, maintenance and validation details, and [the changelog](CHANGELOG.md) for changes.
 
+## ForgeMill ESXi template-sync foreign-key fix
+
+**Diagnosis on ESXi-188 (2026-10-15):** The official ForgeMill release's
+`TargetService.SyncTemplates` deletes unmanaged template rows before
+re-inserting/updating the inventory. The deletion fails with SQLite FK error
+787 when historical deployments reference those IDs. This affects existing
+records such as `rocky-9.8-golden` and `mikrotik-chr-7.24.5-golden`.
+
+This repository contains two remedies:
+
+**Permanent application patch (opt-in image, not yet published):**
+[patches/patch-forgemill-template-sync.py](patches/patch-forgemill-template-sync.py)
+removes the unsafe deletion from upstream
+`internal/service/target.go`. The existing `INSERT ... ON CONFLICT
+(target_id, moref) DO UPDATE` refreshes synchronized templates in place.
+Template IDs and dependent history survive. **Trade-off:** this conservative
+interim fix leaves stale templates visible until a separate, dependency-aware
+pruning feature is developed.
+
+To build the patched image in GitHub, open **Actions → Build patched
+ForgeMill image (template sync FK fix) → Run workflow**, and enter an
+official ForgeMill release tag, e.g. `v0.21.0`, **matching the version you
+intend to run**. This checks out the upstream tag, fails if the vulnerable
+code doesn't match, applies the patch, and publishes:
+
+```text
+ghcr.io/howard-99/forgemill-syncfix:0.21.0
+```
+
+Version above is illustrative; the tag you choose determines the actual
+image. Ensure the GHCR package is readable by the server (publish it or
+authenticate Docker to GHCR), then on the Ubuntu ForgeMill host:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/howard-99/forgemill-installer/main/install-forgemill.bash -o /tmp/install-forgemill.bash
+sudo bash /tmp/install-forgemill.bash --image ghcr.io/howard-99/forgemill-syncfix:0.21.0
+```
+
+The `--image` option is restricted to a pinned semver tag in this
+repository's GHCR image, verified by registry digest, and saved in
+`/opt/forgemill/settings.json`. Subsequent installer runs retain the chosen
+image, rather than reverting silently to official releases.
+`--official-image` explicitly returns to the upstream release channel.
+**Building and publishing the image requires running the GitHub workflow;
+editing the installer alone does not fix a live ForgeMill binary.** Never
+run an installer upgrade while deployments are active, and take a separate
+verified database/secrets backup first; application migrations aren't
+automatically reversible.
+
+**Immediate, temporary workaround for the current running release:**
+[fixes/repair-template-sync-fk.py](fixes/repair-template-sync-fk.py) installs
+a reversible SQLite BEFORE DELETE trigger for one target that **skips only
+deletes of templates referenced by declared SQLite foreign keys**. It does
+not flag external templates as Factory-managed or delete deployment history.
+Only use until the patched application is deployed.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/howard-99/forgemill-installer/main/fixes/repair-template-sync-fk.py -o /root/repair-template-sync-fk.py
+sudo python3 /root/repair-template-sync-fk.py --target-id 1      # read-only
+sudo docker stop --time 45 forgemill
+sudo python3 /root/repair-template-sync-fk.py --apply --target-id 1
+sudo docker start forgemill
+```
+
+The apply step creates a consistent timestamped backup in
+`/opt/forgemill/backups` **before changing the database schema**, checks
+integrity, and refuses to modify it if the container is running. Follow the
+logs after trying Sync. After the patched application is proven working,
+stop ForgeMill, run `sudo python3 /root/repair-template-sync-fk.py --remove
+--target-id 1`, and start it again. Never delete your existing DB, disable
+SQLite foreign keys, or modify the historical deployment IDs to force sync.
+
+---
+
 ## One-command installation
 
 On a fresh **Ubuntu 22.04, 24.04 or 26.04 LTS x86-64 (amd64)** server, paste this entire command into the terminal from your home directory:
@@ -38,7 +112,7 @@ The default `0.0.0.0` binding listens on every IPv4 interface. Docker-published 
 - Start after reboot and restart after process failure. A small systemd timer checks every two minutes and restarts a running container only after Docker reports it unhealthy. Intentional container stops are respected.
 - Container log rotation at three 10 MB files. Installer temporary files and downloaded apt packages are cleaned up; after a successful update, only this install's previous image references are removed, without forcing removal of an image in use elsewhere.
 
-It creates **no scheduled backups, database copies, source checkout, build toolchain, Compose stack or automatic ForgeMill upgrade job**. Persistent application data is required storage and can grow with usage. The installer never deletes databases, volumes, deployments, templates or arbitrary Docker images to free space. No installer can guarantee years of unattended operation: keep Ubuntu and Docker security updates current, monitor free disk space, and review ForgeMill release notes before updating. OS release upgrades remain your responsibility.
+The normal installer creates **no scheduled backups, database copies, source checkout, build toolchain, Compose stack or automatic ForgeMill upgrade job**. The optional FK workaround is separate and explicitly creates a pre-change database backup. Persistent application data is required storage and can grow with usage. The installer never deletes databases, volumes, deployments, templates or arbitrary Docker images to free space. No installer can guarantee years of unattended operation: keep Ubuntu and Docker security updates current, monitor free disk space, and review ForgeMill release notes before updating. OS release upgrades remain your responsibility.
 
 ## Update and manage
 
