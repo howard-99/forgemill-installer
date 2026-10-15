@@ -143,6 +143,63 @@ Rocky's working `forgemill` password/DHCP/VMware Tools result was reported on ES
 
 If ForgeMill's template sync fails with SQLite `FOREIGN KEY constraint failed (787)`, follow the separate, backup-first recovery steps in the [main project README](../README.md). Do not remove deployment references or disable foreign keys to force a sync.
 
+## MikroTik CHR keyboard does not accept typing on a NEW ForgeMill clone
+
+If the template boots and a MikroTik VM deployed through ForgeMill displays
+RouterOS but the ESXi console cannot type, check the **deployed VM** for
+`keyboard.allowBothIRQs = "FALSE"`. The main CHR template includes this
+setting, but an unpatched ForgeMill standalone-ESXi fallback does not always
+carry `ExtraConfig` into a newly created VM.
+
+There is a guarded, reversible ESXi-side repair:
+[fix-chr-console-keyboard.sh](fix-chr-console-keyboard.sh). It requires an
+explicit VMID, refuses template/golden names, prints its VMX and key hardware
+settings, backs up VMX before writing, does **not** power off any VM, and
+refuses to edit unless the clone is already **Powered off**. It then reloads
+the VMX configuration. It does not modify the source template.
+
+Because fresh ESXi hosts may hang on GitHub HTTPS, on the image server
+(`172.31.31.183`) first:
+
+```bash
+cd /var/lib/vz/template/iso
+curl -fL https://raw.githubusercontent.com/howard-99/forgemill-installer/main/esxi-templates/fix-chr-console-keyboard.sh -o fix-chr-console-keyboard.sh
+sh -n fix-chr-console-keyboard.sh
+chmod 644 fix-chr-console-keyboard.sh
+sha256sum fix-chr-console-keyboard.sh
+```
+
+On ESXi `172.31.31.192` (or another ESXi host), find **the new clone's**
+numeric VMID and then:
+
+```sh
+vim-cmd vmsvc/getallvms
+wget -O /tmp/fix-chr-console-keyboard.sh http://172.31.31.183/iso/fix-chr-console-keyboard.sh
+sh -n /tmp/fix-chr-console-keyboard.sh
+sha256sum /tmp/fix-chr-console-keyboard.sh
+sh /tmp/fix-chr-console-keyboard.sh inspect VMID
+```
+
+Compare the downloaded SHA-256 with the image-server result before
+executing. Replace `VMID` with the deployed CHR VM's numeric identifier.
+If the setting is missing, use the ESXi UI to **power off that test clone**
+(not a production router, and not the template) and run:
+
+```sh
+sh /tmp/fix-chr-console-keyboard.sh apply VMID
+```
+
+Then power on the clone and retest keyboard input. If the setting was
+already `FALSE`, investigate console/browser/device issues rather
+than appending a duplicate VMX key.
+
+**Long-term:** the [ForgeMill source patch](../patches/patch-forgemill-esxi-ide.py)
+and [optional image build](../.github/workflows/build-fork-syncfix.yml)
+preserve source IDE and keyboard configuration during standalone ESXi
+fallback deployments. These GitHub changes have **no effect** on an
+already-running upstream official ForgeMill image until the patched image
+has been successfully built, installed, and boot-tested.
+
 ## After installation
 
 Open ForgeMill, connect to standalone ESXi on TCP 443 with an authorized account and suitable TLS validation settings, and sync templates. The source VMs must remain powered **off**. Confirm the three display names above and validate deploy/boot **on clones only**.
