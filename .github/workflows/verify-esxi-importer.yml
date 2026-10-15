@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - 'esxi-templates/import.sh'
+      - 'esxi-templates/publish-to-image-server.sh'
       - 'esxi-templates/README.md'
       - 'tests/test_esxi_importer_v2.py'
       - '.github/workflows/verify-esxi-importer.yml'
@@ -24,10 +25,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: POSIX shell syntax
         run: sh -n esxi-templates/import.sh
+      - name: Image-server publisher Bash syntax
+        run: bash -n esxi-templates/publish-to-image-server.sh
       - name: Three-template regression tests
         run: python3 -m unittest discover -s tests -p test_esxi_importer_v2.py -v
       - name: ShellCheck (if available)
         run: |
           if command -v shellcheck >/dev/null 2>&1; then
             shellcheck -s sh -S error esxi-templates/import.sh
+            shellcheck -s bash -S error esxi-templates/publish-to-image-server.sh
           fi
