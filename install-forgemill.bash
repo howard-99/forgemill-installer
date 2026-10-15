@@ -2,14 +2,18 @@
 # ForgeMill installer for fresh Ubuntu 22.04, 24.04 and 26.04 LTS (amd64).
 # Run: sudo bash install-forgemill.bash
 # Rerun this file to install the newest stable release, preserving all data.
-# No backups, source builds, external database or automatic app upgrades.
+# No backups, local source builds, external database or automatic app upgrades.
+# Optional patched image is built separately using this repository's GitHub Actions.
 set -Eeuo pipefail
 umask 077
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export DEBIAN_FRONTEND=noninteractive
 
 readonly APP_DIR=/opt/forgemill
-readonly REPOSITORY=ghcr.io/blink-zero/forgemill
+readonly OFFICIAL_REPOSITORY=ghcr.io/blink-zero/forgemill
+REPOSITORY=$OFFICIAL_REPOSITORY
+CUSTOM_IMAGE=''
+IMAGE_SOURCE_EXPLICIT=0
 readonly OWNER_LABEL=io.forgemill.installer
 DOCKER=(docker --host unix:///var/run/docker.sock)
 TMP_DIR=''
@@ -37,9 +41,11 @@ Installs the latest stable GitHub release on Ubuntu 22.04/24.04/26.04 amd64.
 Default URL: https://SERVER-IP:8443 (a generated self-signed certificate).
 Prints the admin login after startup and checks the generated password.
 
-Rerun to update. Existing data, secrets, certificate and port are preserved.
+Rerun to update. Existing data, secrets, certificate, port and chosen image are preserved.
 --port NUMBER    HTTPS host port (1-65535); default 8443 on first install.
 --bind IPV4      Host IPv4 address; default 0.0.0.0 on first install.
+--image IMAGE    Opt in to pinned ghcr.io/howard-99/forgemill-syncfix:VERSION.
+--official-image Return to upstream official latest stable releases.
 --help          Show this help.
 
 Installation and persistent data: /opt/forgemill
@@ -65,6 +71,8 @@ while (($#)); do
         --help|-h) usage; exit 0 ;;
         --port) (($# >= 2)) || die '--port needs a number.'; PORT=$2; shift 2 ;;
         --bind) (($# >= 2)) || die '--bind needs an IPv4 address.'; BIND_IP=$2; shift 2 ;;
+        --image) (($# >= 2)) || die '--image needs a pinned image reference.'; CUSTOM_IMAGE=$2; IMAGE_SOURCE_EXPLICIT=1; shift 2 ;;
+        --official-image) CUSTOM_IMAGE=''; IMAGE_SOURCE_EXPLICIT=1; shift ;;
         *) die "Unknown argument: $1 (use --help)." ;;
     esac
 done
@@ -138,6 +146,9 @@ fi
 if [[ -f $APP_DIR/settings.json ]]; then
     PORT=${PORT:-$(jq -er '.port' "$APP_DIR/settings.json")}
     BIND_IP=${BIND_IP:-$(jq -er '.bind' "$APP_DIR/settings.json")}
+    if (( ! IMAGE_SOURCE_EXPLICIT )); then
+        CUSTOM_IMAGE=$(jq -r '.image // ""' "$APP_DIR/settings.json")
+    fi
 fi
 PORT=${PORT:-8443}
 BIND_IP=${BIND_IP:-0.0.0.0}
@@ -154,15 +165,26 @@ if ss -H -ltn "sport = :$PORT" | grep -q .; then
     fi
 fi
 
-log 'Resolving the newest stable ForgeMill release from GitHub.'
-curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-    --retry 3 --connect-timeout 15 --max-time 120 \
-    -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
-    https://api.github.com/repos/blink-zero/forgemill/releases/latest -o "$TMP_DIR/release.json"
-RELEASE=$(jq -er 'select(.draft == false and .prerelease == false) | .tag_name' "$TMP_DIR/release.json")
-[[ $RELEASE =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Unexpected release tag: $RELEASE"
-# docker/metadata-action publishes semver image tags without the Git tag's v.
-IMAGE_TAG="$REPOSITORY:${RELEASE#v}"
+if [[ -n $CUSTOM_IMAGE ]]; then
+    # Do not permit arbitrary Docker registries or floating tags from CLI/JSON.
+    # An opt-in patched image must have a fixed semver tag in this account.
+    [[ $CUSTOM_IMAGE =~ ^ghcr\.io/howard-99/forgemill-syncfix:[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+        die 'Only pinned ghcr.io/howard-99/forgemill-syncfix:VERSION images are supported by --image.'
+    REPOSITORY=${CUSTOM_IMAGE%:*}
+    IMAGE_TAG=$CUSTOM_IMAGE
+    RELEASE="v${CUSTOM_IMAGE##*:}-syncfix"
+    log "Opt-in patched image selected: $IMAGE_TAG"
+else
+    log 'Resolving the newest stable ForgeMill release from GitHub.'
+    curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        --retry 3 --connect-timeout 15 --max-time 120 \
+        -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
+        https://api.github.com/repos/blink-zero/forgemill/releases/latest -o "$TMP_DIR/release.json"
+    RELEASE=$(jq -er 'select(.draft == false and .prerelease == false) | .tag_name' "$TMP_DIR/release.json")
+    [[ $RELEASE =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Unexpected release tag: $RELEASE"
+    # docker/metadata-action publishes semver image tags without the Git tag's v.
+    IMAGE_TAG="$REPOSITORY:${RELEASE#v}"
+fi
 log "Downloading $RELEASE ($IMAGE_TAG)."
 pulled=0
 for attempt in 1 2 3; do
@@ -227,7 +249,8 @@ if [[ -f $APP_DIR/installed-image.json ]]; then
     OLD_ID=$(jq -r '.id // ""' "$APP_DIR/installed-image.json")
 fi
 # Commit settings before first startup, so an interrupted run is repeatable.
-jq -n --argjson port "$PORT" --arg bind "$BIND_IP" '{port:$port,bind:$bind}' > "$TMP_DIR/settings.json"
+jq -n --argjson port "$PORT" --arg bind "$BIND_IP" --arg image "$CUSTOM_IMAGE" \
+    '{port:$port,bind:$bind,image:$image}' > "$TMP_DIR/settings.json"
 install -m 0600 "$TMP_DIR/settings.json" "$APP_DIR/settings.json"
 log 'Starting ForgeMill with persistent data and bounded logs.'
 if "${DOCKER[@]}" container inspect forgemill >/dev/null 2>&1; then
@@ -350,5 +373,10 @@ fi
 printf '\nHTTPS uses a self-signed certificate; trust /opt/forgemill/tls/server.crt in your browser.\n'
 printf 'Data and keys: /opt/forgemill (required application storage; no backup copies).\n'
 printf 'Container logs rotate at 3 x 10 MB. No automatic application upgrades.\n'
-printf 'Update to the newest stable release: sudo bash /opt/forgemill/install.bash\n'
+if [[ -n $CUSTOM_IMAGE ]]; then
+    printf 'Patched image pinned: %s\n' "$CUSTOM_IMAGE"
+    printf 'Switch to official stable: sudo bash /opt/forgemill/install.bash --official-image\n'
+else
+    printf 'Update to the newest stable release: sudo bash /opt/forgemill/install.bash\n'
+fi
 printf 'Initial password file: sudo cat /opt/forgemill/secrets/admin_password\n'
