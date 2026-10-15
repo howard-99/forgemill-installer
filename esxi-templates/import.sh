@@ -1,7 +1,7 @@
 #!/bin/sh
-# ForgeMill ESXi Main Template Importer — v1.7
+# ForgeMill ESXi Main Template Importer — v2.0
 # ESXi 7.x / 8.x BusyBox/POSIX sh; no external VM management workstation required.
-# Usage: sh forgemill-esxi-import.sh [all|ubuntu|chr|chr7196|chr7237|rocky|rockyvmware|check|status]
+# Usage: sh forgemill-esxi-import.sh [all|ubuntu|rocky|mikrotik|check|status]
 # Imported VMs remain powered OFF. Nothing registered or stored previously is deleted.
 set -eu
 
@@ -27,17 +27,14 @@ warn() { printf '[WARN] %s\n' "$*" >&2; }
 fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
 case "$MODE" in
-  all|ubuntu|chr|mikrotik|chr7196|chr7237|rocky|rockyvmware|check|status) ;;
+  all|ubuntu|rocky|rockyvmware|chr|mikrotik|chr7237|check|status) ;;
   -h|--help|help)
     cat <<'HELP'
 Usage: sh forgemill-esxi-import.sh [MODE]
-  all       Import Ubuntu 24.04, Rocky 9.8, CHR 7.19.6 + 7.23.7 (default)
+  all       Import EXACTLY THREE: Ubuntu 24.04, Rocky 9.8 VMware, CHR 7.23.7
   ubuntu    Import Ubuntu 24.04 only
-  chr       Import BOTH tested MikroTik Legacy BIOS images (alias mikrotik)
-  chr7196   Import MikroTik CHR 7.19.6 Legacy BIOS only
-  chr7237   Import MikroTik CHR 7.23.7 Legacy BIOS only
-  rocky     Import existing Rocky Linux 9.8 OVA only
-  rockyvmware  Import NEW VMware-ready Rocky 9.8 candidate only (not in all)
+  rocky     Import tested Rocky 9.8 VMware OVA only (alias rockyvmware)
+  mikrotik  Import CHR 7.23.7 Legacy BIOS only (aliases chr, chr7237)
   check     Display datastores/VM networks and selected target datastore
   status    Display registered virtual machines; no changes
 
@@ -48,20 +45,21 @@ Optional environment variables:
   MIN_FREE_GB=12         Minimum free storage required before import
   KEEP_SOURCE=1          Preserve downloaded/extracted OVA files after success
   KEEP_FAILED=1          Preserve failed staging directory for diagnostics
-  CHR_7196_SHA256=...    Optional trusted OVA SHA256 for CHR 7.19.6
-  CHR_7237_SHA256=...    Optional trusted OVA SHA256 for CHR 7.23.7
-  ROCKY_VMWARE_SHA256=... Override known test OVA SHA256 if image is rebuilt
+  UBUNTU_SHA256=...      Recommended trusted OVA SHA256 for Ubuntu 24.04
+  CHR_7237_SHA256=...    Recommended trusted OVA SHA256 for CHR 7.23.7
+  ROCKY_VMWARE_SHA256=... Override pinned Rocky 9.8 SHA256 if rebuilt
   WGET_NO_CHECK_CERT=1   Bypass TLS certificate validation for HTTPS OVA only (insecure)
 
 Safety: never overwrite existing templates, delete original VM disks, change
 firewall rules, or power on imported images. Use a dedicated VM network.
 Standalone ESXi has no native vCenter template objects: these are tagged,
-powered-off main-template source VMs for ForgeMill cloning.
-WARNING: ForgeMill's upstream standalone-ESXi fallback may recreate IDE
-boot disks as SCSI disks. Import alone does not fix that cloning bug.
+powered-off VM sources for ForgeMill cloning.
+WARNING: An unpatched ForgeMill standalone-ESXi fallback can recreate IDE
+boot disks as SCSI and lose CHR keyboard settings. Import alone does not
+repair ForgeMill's cloning code; test a CHR deployment before production.
 HELP
     exit 0 ;;
-  *) fail "Unknown mode '$MODE'. Use all, ubuntu, chr, chr7196, chr7237, rocky, rockyvmware, check or status." ;;
+  *) fail "Unknown mode '$MODE'. Use all, ubuntu, rocky, mikrotik, chr, chr7237, rockyvmware, check or status." ;;
 esac
 
 # ESXi 7 may expose commands in different directories and some BusyBox
@@ -106,7 +104,7 @@ if [ "$MODE" = status ]; then
   say 'VM inventory and ForgeMill main-template sources'
   inventory=$(vim-cmd vmsvc/getallvms) || fail 'Cannot list ESXi VMs'
   printf '%s\n' "$inventory"
-  for name in ubuntu-24.04-main-template rocky-9.8-main-template rocky-9.8-forgemill-main-template mikrotik-chr-7.19.6-main-template mikrotik-chr-7.23.7-main-template; do
+  for name in Template-Ubuntu-24.04 Template-Rocky-9.8 Template-MikroTik-CHR-7.23.7; do
     id=$(printf '%s\n' "$inventory" | awk -v n="$name" '$1 ~ /^[0-9]+$/ && $2==n {print $1; exit}')
     if [ -z "$id" ]; then
       info "NOT FOUND: $name"
@@ -114,7 +112,7 @@ if [ "$MODE" = status ]; then
     fi
     state=$(vim-cmd vmsvc/power.getstate "$id") || fail "Cannot query VMID $id"
     if printf '%s\n' "$state" | grep -q 'Powered off'; then
-      info "READY: $name (VMID $id, powered off, ForgeMill source VM)"
+      info "FOUND: $name (VMID $id, powered off; verify VMX hardware before deploying)"
     else
       warn "NOT READY: $name (VMID $id, not powered off)"
     fi
@@ -219,7 +217,7 @@ case "$WGET_NO_CHECK_CERT" in 0|1) ;; *) fail 'WGET_NO_CHECK_CERT must be 0 or 1
 
 if [ "$MODE" = check ]; then
   say 'Preflight PASS'
-  info "OVAs under $BASE_URL: ubuntu-24.04-server-cloudimg-amd64.ova, rocky-9.8.ova, rocky-9.8-forgemill-vmware.ova (candidate), chr-7.19.6-legacy-bios.ova, chr-7.23.7-legacy-bios.ova"
+  info "OVAs under $BASE_URL: ubuntu-24.04-server-cloudimg-amd64.ova, rocky-9.8-forgemill-vmware.ova, chr-7.23.7-legacy-bios.ova"
   info 'No image files downloaded or boot-tested in check mode.'
   info 'No VMs were changed.'
   exit 0
@@ -357,28 +355,18 @@ import_image() {
   EXPECTED_SHA256=''
   case "$kind" in
     ubuntu)
-      VMNAME='ubuntu-24.04-main-template'
-      LEGACY_VMNAME='ubuntu-24.04-golden'
+      VMNAME='Template-Ubuntu-24.04'
+      LEGACY_NAMES='ubuntu-24.04-main-template ubuntu-24.04-golden'
       FILE='ubuntu-24.04-server-cloudimg-amd64.ova'
       GUEST='ubuntu64Guest'
       RAM=2048
       FW_DEFAULT=bios
       CTRL_DEFAULT='6|VirtualSCSI'
-      ;;
-    chr7196)
-      VMNAME='mikrotik-chr-7.19.6-main-template'
-      LEGACY_VMNAME='mikrotik-chr-7.19.6-golden'
-      FILE='chr-7.19.6-legacy-bios.ova'
-      GUEST='otherLinux64Guest'
-      RAM=1024
-      FW_DEFAULT=bios
-      CTRL_DEFAULT='5|IDE'
-      IS_CHR=1
-      EXPECTED_SHA256=${CHR_7196_SHA256:-}
+      EXPECTED_SHA256=${UBUNTU_SHA256:-}
       ;;
     chr7237)
-      VMNAME='mikrotik-chr-7.23.7-main-template'
-      LEGACY_VMNAME='mikrotik-chr-7.23.7-golden'
+      VMNAME='Template-MikroTik-CHR-7.23.7'
+      LEGACY_NAMES='mikrotik-chr-7.23.7-main-template mikrotik-chr-7.23.7-golden'
       FILE='chr-7.23.7-legacy-bios.ova'
       GUEST='otherLinux64Guest'
       RAM=1024
@@ -387,26 +375,15 @@ import_image() {
       IS_CHR=1
       EXPECTED_SHA256=${CHR_7237_SHA256:-}
       ;;
-    rocky)
-      VMNAME='rocky-9.8-main-template'
-      LEGACY_VMNAME='rocky-9.8-golden'
-      FILE='rocky-9.8.ova'
-      GUEST='otherLinux64Guest'
-      RAM=2048
-      FW_DEFAULT=bios
-      CTRL_DEFAULT='6|VirtualSCSI'
-      ;;
     rockyvmware)
-      # Independent candidate. Protect prior rocky-9.8-golden / main-template.
-      VMNAME='rocky-9.8-forgemill-main-template'
-      LEGACY_VMNAME='rocky-9.8-forgemill-golden'
+      VMNAME='Template-Rocky-9.8'
+      LEGACY_NAMES='rocky-9.8-forgemill-main-template rocky-9.8-forgemill-golden rocky-9.8-main-template rocky-9.8-golden'
       FILE='rocky-9.8-forgemill-vmware.ova'
       GUEST='otherLinux64Guest'
       RAM=2048
       FW_DEFAULT=bios
       CTRL_DEFAULT='6|pvscsi'
-      # SHA256 of verified user-built OVA from Proxmox VM 100 (2026-10-15).
-      # Set ROCKY_VMWARE_SHA256 when rebuilding the OVA with different bytes.
+      # Verified OVA from Proxmox VM 100, deployed successfully by operator.
       EXPECTED_SHA256=${ROCKY_VMWARE_SHA256:-2a58c89a81b456e6c90cdae6d2d23152799cd137a42207d50b40d538b4274f33}
       ;;
   esac
@@ -414,18 +391,22 @@ import_image() {
   say "Import: $VMNAME"
   id=$(registered_id "$VMNAME")
   if [ -n "$id" ]; then
-    info "SKIP: VM already registered (VMID $id). Preserving existing template."
-    vim-cmd vmsvc/power.getstate "$id" || true
+    state=$(vim-cmd vmsvc/power.getstate "$id") || fail "Cannot inspect existing $VMNAME (VMID $id)"
+    printf '%s\n' "$state" | grep -q 'Powered off' || fail "$VMNAME already exists but is powered on (VMID $id); will not treat it as a template"
+    info "SKIP: $VMNAME already registered (VMID $id), powered off. Preserving existing VM and disks."
+    warn "Existing VMX settings are not replaced or validated during skip; audit controller/firmware/keyboard manually."
     return 0
   fi
-  # Never silently import a second copy when a legacy -golden source exists.
-  legacy_id=$(registered_id "$LEGACY_VMNAME")
-  if [ -n "$legacy_id" ]; then
-    fail "Legacy source $LEGACY_VMNAME is registered (VMID $legacy_id). No duplicate imported. Rename/migrate it intentionally before re-running."
-  fi
-  if previous=$(existing_directory "$LEGACY_VMNAME"); then
-    fail "Legacy source directory exists: $previous. No duplicate imported. Inspect it before migration."
-  fi
+  # Never silently create a renamed duplicate of an existing older source.
+  for legacy_name in $LEGACY_NAMES; do
+    legacy_id=$(registered_id "$legacy_name")
+    if [ -n "$legacy_id" ]; then
+      fail "Existing source $legacy_name (VMID $legacy_id) prevents duplicate $VMNAME. Do not rename/delete blindly: migrate explicitly after checking ForgeMill references."
+    fi
+    if previous=$(existing_directory "$legacy_name"); then
+      fail "Older source directory exists: $previous. No duplicate imported; inspect first."
+    fi
+  done
   if previous=$(existing_directory "$VMNAME"); then
     fail "Directory already exists: $previous. No overwrite performed. Inspect/recover this VM manually."
   fi
@@ -462,8 +443,8 @@ import_image() {
     esac
     [ "${#EXPECTED_SHA256}" -eq 64 ] || fail "Expected SHA256 must be 64 hex characters for $VMNAME"
     find_exec sha256sum >/dev/null 2>&1 || fail 'sha256sum is required for expected OVA checksum verification'
-  elif [ "$IS_CHR" = 1 ]; then
-    warn "No trusted expected SHA256 provided for $VMNAME; HTTP and an OVA checksum alone do not authenticate the source"
+  else
+    warn "No trusted expected SHA256 provided for $VMNAME; HTTP + self-computed checksum does not authenticate the image"
   fi
   if find_exec sha256sum >/dev/null 2>&1; then
     OVA_SHA256=$(sha256sum "$OVA" | awk '{print $1}')
@@ -542,6 +523,11 @@ import_image() {
     [ "$FW" = bios ] || fail "$FILE requires BIOS; OVF selected '$FW'"
     [ "$DISK_CTRL" = scsi ] && [ "$DISK_SUB" = pvscsi ] || fail "$FILE requires PVSCSI boot disk; OVF selected '$DISK_CTRL ${DISK_SUB:-}'"
   fi
+  if [ "$kind" = ubuntu ]; then
+    # Preserve the image's declared firmware/controller; reject mismatched
+    # or unknown hardware instead of silently assuming an OVF default.
+    [ "$DISK_CTRL" = scsi ] || fail "$FILE requires a SCSI boot disk; OVF selected '$DISK_CTRL'"
+  fi
   info "Boot setup from OVF: firmware=$FW, disk=$DISK_CTRL ${DISK_SUB:-}, network=vmxnet3"
 
   say 'Converting stream VMDK to native thin VMFS disk'
@@ -609,7 +595,7 @@ EOF_NIC
   # Keep a small audit record so you can diagnose boot/OVF differences later.
   cp "$OVF" "$STAGE/original-template.ovf"
   cat > "$STAGE/IMPORT-INFO.txt" <<EOF_IMPORT
-Imported by ForgeMill ESXi Main Template Importer v1.7
+Imported by ForgeMill ESXi Main Template Importer v2.0
 Template: $VMNAME
 OVA source: $BASE_URL/$FILE
 OVA SHA256: $OVA_SHA256
@@ -647,26 +633,19 @@ EOF_IMPORT
   info "SUCCESS: $VMNAME (VMID $VMID) at $FINAL"
   info 'Registered as a powered-off, annotated ForgeMill template source; native vCenter templates require vCenter.'
   if [ "$IS_CHR" = 1 ]; then
-    warn 'CHR source is BIOS + IDE with keyboard workaround, but upstream ForgeMill ESXi fallback can change IDE to SCSI. Test/fix the clone path before production.'
+    warn 'CHR source uses BIOS+IDE+keyboard fix. IMPORTANT: unpatched ForgeMill ESXi fallback can change IDE to SCSI. Validate a deployed CHR VM with a fixed ForgeMill build.'
   fi
 }
 
 case "$MODE" in
   all)
     import_image ubuntu
-    import_image chr7196
+    import_image rockyvmware
     import_image chr7237
-    import_image rocky
     ;;
   ubuntu) import_image ubuntu ;;
-  chr|mikrotik)
-    import_image chr7196
-    import_image chr7237
-    ;;
-  chr7196) import_image chr7196 ;;
-  chr7237) import_image chr7237 ;;
-  rocky) import_image rocky ;;
-  rockyvmware) import_image rockyvmware ;;
+  rocky|rockyvmware) import_image rockyvmware ;;
+  mikrotik|chr|chr7237) import_image chr7237 ;;
 esac
 
 say 'Final ESXi virtual machine inventory'
