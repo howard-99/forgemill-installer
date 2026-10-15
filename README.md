@@ -84,42 +84,43 @@ Sources: [ForgeMill README](https://github.com/blink-zero/forgemill/blob/main/RE
 
 ## Fresh ESXi host — three ready-to-import template sources
 
-The [ESXi importer v2.0](esxi-templates/import.sh) creates exactly three
-**powered-off** VM sources on a fresh ESXi 7.x/8.x host, with clean display
-names:
+The [ESXi importer v2.3](esxi-templates/import.sh) installs **exactly
+three powered-off** source VMs for ForgeMill:
 
-- `Template-Ubuntu-24.04`
-- `Template-Rocky-9.8` (the operator-tested VMware-ready cloud image)
-- `Template-MikroTik-CHR-7.23.7` (Legacy BIOS + IDE + keyboard setting)
+- `Template-Ubuntu-24.04` — cloud OVA
+- `Template-Rocky-9.8` — working VMware-ready OVA
+- **`Template-MikroTik-CHR-7.21rc6`** — the Legacy BIOS **VMDK**
+  that booted with a working keyboard in a direct ESXi test
 
-The images must be hosted on your trusted image server. The default source
-is `http://172.31.31.183/iso` and the default ESXi port group is
-`VM Network`. **New ESXi 7 hosts have been observed hanging during
-`wget` TLS connections to GitHub; a successful ping doesn't solve it.**
-Use the [image-server publisher](esxi-templates/publish-to-image-server.sh)
-once on your Proxmox/Linux HTTP server to stage the script at
-`http://172.31.31.183/iso/forgemill-esxi-import.sh`. Then, from each
-**ESXi SSH shell as root**:
+CHR **7.23.7 has been removed from the default installer**. Existing
+7.23.7 VMs are not removed or changed. CHR 7.21rc6 uses IDE 0:0,
+virtual hardware 17 and the default virtual keyboard (no additional
+PS/2/USB keyboard tweaks). The new source has a VMXNET3 NIC; a
+ForgeMill-*deployed* clone still needs its own keyboard/boot test.
+
+ESXi BusyBox `wget` has sometimes hung when accessing GitHub HTTPS.
+Publish the current GitHub script on your Proxmox image server
+`172.31.31.183` first (follow the
+[image-server preparation](esxi-templates/README.md)), using
+[the publisher](esxi-templates/publish-to-image-server.sh). **From a
+fresh ESXi SSH console as root**:
 
 ```sh
 wget -O /tmp/forgemill-esxi-import.sh http://172.31.31.183/iso/forgemill-esxi-import.sh && sh -n /tmp/forgemill-esxi-import.sh && sh /tmp/forgemill-esxi-import.sh check && sh /tmp/forgemill-esxi-import.sh all && sh /tmp/forgemill-esxi-import.sh status
 ```
 
-**Compare the downloaded script SHA-256 to the trusted publisher's value
-before running in production**; the convenient one-liner by itself
-does not authenticate an HTTP script. Prefer a pinned audited commit and
-independently verified OVA checksums. For staging commands, explicit
-datastore, hash variables and limitations see the
-[ESXi install instructions](esxi-templates/README.md).
+This assumes the image server hosts the two OVAs and
+`chr-7.21rc6-legacy-bios.vmdk`. Before production execution, compare
+the downloaded script's SHA-256 with the trusted publisher output,
+and set `CHR_721RC6_SHA256` to the independently measured VMDK checksum;
+HTTP does not authenticate the contents.
 
-**Important:** The standalone-ESXi fallback in unpatched upstream ForgeMill
-may change the MikroTik IDE boot controller to SCSI. This repository also
-contains an [opt-in source patch](patches/patch-forgemill-esxi-ide.py) and
-[GitHub image build workflow](.github/workflows/build-fork-syncfix.yml)
-to address the application side. The patched image is not installed
-automatically; test CHR cloning, console input, and boot on each ESXi host
-before production.
-
+**Important:** The direct 7.21rc6 console test does not prove that an
+unpatched ForgeMill standalone-ESXi clone will preserve IDE or accept
+typing. The source-level [IDE cloning patch](patches/patch-forgemill-esxi-ide.py)
+and [GHCR image build workflow](.github/workflows/build-fork-syncfix.yml)
+are separate application-side fixes. Importing a template alone cannot
+update your running ForgeMill container.
 
 ---
 
