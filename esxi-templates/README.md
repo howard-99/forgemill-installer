@@ -1,6 +1,6 @@
 # ForgeMill ESXi — Three Production Template Sources
 
-**Installer:** `esxi-templates/import.sh` v2.1 for standalone VMware ESXi 7.x and 8.x using a BusyBox-compatible shell. No Python, Docker or OVF Tool is installed on the ESXi host.
+**Installer:** `esxi-templates/import.sh` v2.2 for standalone VMware ESXi 7.x and 8.x using a BusyBox-compatible shell. No Python, Docker or OVF Tool is installed on the ESXi host.
 
 ## Default three sources plus one optional MikroTik diagnostic
 
@@ -16,6 +16,37 @@ The default `all` action now creates **exactly three**, with the same names show
 The Rocky OVA was prepared with VMware Tools and cloud-init on a temporary Proxmox VM and the operator reported that a ForgeMill deployment works. Its known SHA-256 is **`2a58c89a81b456e6c90cdae6d2d23152799cd137a42207d50b40d538b4274f33`**. The importer verifies this automatically. If the OVA is ever rebuilt, supply the independently measured new checksum in `ROCKY_VMWARE_SHA256`.
 
 CHR 7.23.7 has been reported to boot with a fresh legacy-BIOS VMDK on ESXi-188. The keyboard/PS2 IRQ setting is based on the operator's reported recovery. The CHR and Ubuntu OVA files are **not included in GitHub**; they must be served from a trusted image server, and their whole-OVA checksums should be pinned using `CHR_7237_SHA256` and `UBUNTU_SHA256` when known. Without pins, the importer logs a warning and computes informational checksums but cannot authenticate a plain-HTTP image. Image compatibility and full first-boot behavior must be tested with a clone on each host.
+
+## VMware raw VMX guestOS identifier correction (v2.2)
+
+Earlier importer versions wrote vSphere API enum names (`otherLinux64Guest`
+and `ubuntu64Guest`) into the raw `.vmx` `guestOS` field. On ESXi-192
+this produced `vim.fault.UnsupportedGuest` when trying to power on a
+registered source VM. The correct equivalent VMX values are
+`otherlinux-64` (CHR and generic Rocky) and `ubuntu-64` (Ubuntu).
+The upstream VMware open-vm-tools `guest_os_tables.h` explicitly maps
+these values to their API enums.
+
+The new importer writes the corrected strings **only for new imports**;
+it never overwrites or re-registers existing source VMs. If you already
+imported a template with the old guestOS, leave the source powered off.
+For a temporary direct-clone test, repair **only the powered-off new test
+clone**, then reload it:
+
+```sh
+VMX="/vmfs/volumes/DISK1-raid1/mikrotik7196-direct-test/mikrotik7196-direct-test.vmx"
+vim-cmd vmsvc/power.getstate 10
+grep -i '^guestOS' "$VMX"
+cp "$VMX" "$VMX.before-guestos-fix"
+sed -i 's/^guestOS = "otherLinux64Guest"$/guestOS = "otherlinux-64"/' "$VMX"
+grep -i '^guestOS' "$VMX"
+vim-cmd vmsvc/reload 10
+vim-cmd vmsvc/power.on 10
+```
+
+**Do not confuse template VMID 8 with independent diagnostic VMID 10.**
+The former must remain off; the latter was created to test whether
+preserving BIOS + IDE + virtual hardware 17 allows CHR keyboard input.
 
 ## Optional MikroTik 7.19.6 console comparison on ESXi-192
 
