@@ -1,296 +1,155 @@
-# ForgeMill ESXi — Three Production Template Sources
+# ForgeMill standalone ESXi — fresh host templates (v2.3)
 
-**Installer:** `esxi-templates/import.sh` v2.2 for standalone VMware ESXi 7.x and 8.x using a BusyBox-compatible shell. No Python, Docker or OVF Tool is installed on the ESXi host.
+This importer prepares **three powered-off source VMs** for discovery by ForgeMill
+on standalone ESXi 7.x/8.x. It runs in the ESXi BusyBox shell and does not
+require Python, Docker, vCenter or ovftool on ESXi.
 
-## Default three sources plus one optional MikroTik diagnostic
+**Important: Ubuntu and Rocky use OVA. MikroTik 7.21rc6 uses the direct VMDK
+that successfully booted with working console keyboard in an isolated
+test VM on ESXi `172.31.31.192`. It is NOT an OVA.**
 
-The default `all` action now creates **exactly three**, with the same names shown in ESXi and ForgeMill:
+## Default three sources
 
-| VM name in ESXi and ForgeMill | Verified source OVA filename | Boot / hardware |
+| ESXi/ForgeMill VM name | Local HTTP source under `/iso/` | Hardware |
 | --- | --- | --- |
-| `Template-Ubuntu-24.04` | `ubuntu-24.04-server-cloudimg-amd64.ova` | Image-declared BIOS/SCSI, VMXNET3 |
-| `Template-Rocky-9.8` | `rocky-9.8-forgemill-vmware.ova` | Legacy BIOS, PVSCSI, VMXNET3, VMware GuestInfo/cloud-init/open-vm-tools |
-| `Template-MikroTik-CHR-7.23.7` | `chr-7.23.7-legacy-bios.ova` | Legacy BIOS, IDE 0:0, VMXNET3, `keyboard.allowBothIRQs = "FALSE"` |
-| `Template-MikroTik-CHR-7.19.6` *(optional)* | `chr-7.19.6-legacy-bios.ova` | Independent BIOS + IDE template for comparative console testing (NOT in `all`) |
+| `Template-Ubuntu-24.04` | `ubuntu-24.04-server-cloudimg-amd64.ova` | Firmware/controller declared by the OVA, VMXNET3 |
+| `Template-Rocky-9.8` | `rocky-9.8-forgemill-vmware.ova` | BIOS, PVSCSI, VMXNET3 |
+| `Template-MikroTik-CHR-7.21rc6` | `chr-7.21rc6-legacy-bios.vmdk` | BIOS, IDE 0:0, VM hardware 17, 1 CPU, 1 GiB RAM, VMXNET3, default keyboard |
 
-The Rocky OVA was prepared with VMware Tools and cloud-init on a temporary Proxmox VM and the operator reported that a ForgeMill deployment works. Its known SHA-256 is **`2a58c89a81b456e6c90cdae6d2d23152799cd137a42207d50b40d538b4274f33`**. The importer verifies this automatically. If the OVA is ever rebuilt, supply the independently measured new checksum in `ROCKY_VMWARE_SHA256`.
+**No CHR PS/2 or USB keyboard workarounds are added to the 7.21rc6 VMX.**
+The successful direct 7.21rc6 test used BIOS, IDE, VMX-17 and no keyboard
+overrides. Our ForgeMill source additionally includes a VMXNET3 NIC so it
+can be selected for networked deployments. That NIC configuration and
+**ForgeMill's ability to clone it with a working keyboard are not yet
+validated** by the direct-console test.
 
-CHR 7.23.7 has been reported to boot with a fresh legacy-BIOS VMDK on ESXi-188. The keyboard/PS2 IRQ setting is based on the operator's reported recovery. The CHR and Ubuntu OVA files are **not included in GitHub**; they must be served from a trusted image server, and their whole-OVA checksums should be pinned using `CHR_7237_SHA256` and `UBUNTU_SHA256` when known. Without pins, the importer logs a warning and computes informational checksums but cannot authenticate a plain-HTTP image. Image compatibility and full first-boot behavior must be tested with a clone on each host.
+The default `all` no longer imports `7.23.7`. The separate `chr7196`
+mode remains available *only* for historical diagnostics; it is not part
+of `all`. Existing 7.23.7 templates and previous deployments are never
+deleted, changed, renamed or powered on by this installer.
 
-## VMware raw VMX guestOS identifier correction (v2.2)
+## Step A: refresh the script on the Proxmox HTTP image server
 
-Earlier importer versions wrote vSphere API enum names (`otherLinux64Guest`
-and `ubuntu64Guest`) into the raw `.vmx` `guestOS` field. On ESXi-192
-this produced `vim.fault.UnsupportedGuest` when trying to power on a
-registered source VM. The correct equivalent VMX values are
-`otherlinux-64` (CHR and generic Rocky) and `ubuntu-64` (Ubuntu).
-The upstream VMware open-vm-tools `guest_os_tables.h` explicitly maps
-these values to their API enums.
+New ESXi builds have been observed hanging on TLS to GitHub despite
+working DNS and ping. Download from GitHub on **the Linux image server**
+and have ESXi download the updated script from the same LAN HTTP server
+that serves the images.
 
-The new importer writes the corrected strings **only for new imports**;
-it never overwrites or re-registers existing source VMs. If you already
-imported a template with the old guestOS, leave the source powered off.
-For a temporary direct-clone test, repair **only the powered-off new test
-clone**, then reload it:
-
-```sh
-VMX="/vmfs/volumes/DISK1-raid1/mikrotik7196-direct-test/mikrotik7196-direct-test.vmx"
-vim-cmd vmsvc/power.getstate 10
-grep -i '^guestOS' "$VMX"
-cp "$VMX" "$VMX.before-guestos-fix"
-sed -i 's/^guestOS = "otherLinux64Guest"$/guestOS = "otherlinux-64"/' "$VMX"
-grep -i '^guestOS' "$VMX"
-vim-cmd vmsvc/reload 10
-vim-cmd vmsvc/power.on 10
-```
-
-**Do not confuse template VMID 8 with independent diagnostic VMID 10.**
-The former must remain off; the latter was created to test whether
-preserving BIOS + IDE + virtual hardware 17 allows CHR keyboard input.
-
-## Optional MikroTik 7.19.6 console comparison on ESXi-192
-
-The 7.23.7 clone (`mikrotik1`, VMID 5) displays RouterOS but does not
-accept keyboard input even after testing `keyboard.allowBothIRQs=FALSE`
-and a virtual USB keyboard. A second **independent source** can help
-determine whether the behavior is specific to the 7.23.7 image or
-affects all ForgeMill standalone-ESXi CHR clones.
-
-**No existing VM is changed.** `chr7196` imports just
-`Template-MikroTik-CHR-7.19.6` from the operator-provided
-`http://172.31.31.183/iso/chr-7.19.6-legacy-bios.ova`. The new
-source is powered **off** and uses Legacy BIOS + IDE 0:0,
-`keyboard.allowBothIRQs = "FALSE"`. The regular `all` mode still
-installs exactly the original three sources.
-
-On the trusted Proxmox image server, refresh the ESXi import script after
-the GitHub change:
+Run on Proxmox `172.31.31.183`:
 
 ```bash
-bash /root/publish-forgemill-esxi.sh
-sha256sum /var/lib/vz/template/iso/forgemill-esxi-import.sh
-ls -lh /var/lib/vz/template/iso/chr-7.19.6-legacy-bios.ova
-sha256sum /var/lib/vz/template/iso/chr-7.19.6-legacy-bios.ova
-```
+cd /var/lib/vz/template/iso
 
-If the publisher isn't installed, follow step A below to download it.
+# Ensure all three images are accessible to the image web server.
+ls -lh ubuntu-24.04-server-cloudimg-amd64.ova \
+       rocky-9.8-forgemill-vmware.ova \
+       chr-7.21rc6-legacy-bios.vmdk
 
-On the fresh ESXi host (`172.31.31.192`):
+# Show independently trusted checksums, particularly the CHR VMDK.
+sha256sum chr-7.21rc6-legacy-bios.vmdk
 
-```sh
-wget -O /tmp/forgemill-esxi-import.sh http://172.31.31.183/iso/forgemill-esxi-import.sh
-sh -n /tmp/forgemill-esxi-import.sh
-grep -n 'chr7196' /tmp/forgemill-esxi-import.sh
-sha256sum /tmp/forgemill-esxi-import.sh
-DATASTORE='DISK1-raid1' PORTGROUP='VM Network' BASE_URL='http://172.31.31.183/iso' sh /tmp/forgemill-esxi-import.sh chr7196
-sh /tmp/forgemill-esxi-import.sh status
-```
-
-Compare the script SHA-256 with the publisher's trusted hash **before**
-running the importer; the convenience example assumes you already did.
-For better OVA source integrity, include `CHR_7196_SHA256` with the
-64-hex value independently measured on Proxmox in the import command.
-
-Then in ForgeMill, **sync the ESXi-192 target** and deploy a disposable
-test VM from `Template-MikroTik-CHR-7.19.6`. Do not power on the source
-template itself. Use a distinct clone name, such as `mikrotik7196-test`.
-Try keyboard input in the ESXi browser console and VMware Remote Console.
-
-If both versions fail, the console stack or ForgeMill's guest VM hardware
-clone path becomes more likely than a RouterOS-version-specific regression.
-In particular, unpatched ForgeMill fallback creates a SCSI disk and may
-omit keyboard `ExtraConfig` rather than preserving IDE and IRQ settings.
-The [application-side patch](../patches/patch-forgemill-esxi-ide.py) must
-be built and deployed separately; merely adding a second template doesn't
-fix that code. Never overwrite the currently working templates/VMs.
-
-## Fresh ESXi bootstrap — use the local image server, not GitHub HTTPS
-
-**Problem observed on newly installed ESXi:** the ESXi BusyBox `wget`
-hangs at `Connecting to raw.githubusercontent.com (...:443)`, even though
-`ping raw.githubusercontent.com` works. DNS/ICMP reachability does not
-establish HTTPS/TLS connectivity. The importer never starts in that case.
-
-**Preferred reliable deployment path:** publish the installer **once** on
-the Linux/Proxmox image server (`172.31.31.183`), then install from the
-same local HTTP endpoint that is already serving the three OVAs. This
-avoids GitHub HTTPS from every ESXi host.
-
-### A. On the Linux image server (Proxmox 183), prepare the installer
-
-```bash
-curl -fL https://raw.githubusercontent.com/howard-99/forgemill-installer/main/esxi-templates/publish-to-image-server.sh -o /root/publish-forgemill-esxi.sh
+# Download or refresh the image-server publisher:
+curl -fsSL https://raw.githubusercontent.com/howard-99/forgemill-installer/main/esxi-templates/publish-to-image-server.sh \
+  -o /root/publish-forgemill-esxi.sh
 bash -n /root/publish-forgemill-esxi.sh
 bash /root/publish-forgemill-esxi.sh
-curl -I http://172.31.31.183/iso/forgemill-esxi-import.sh
+
+# Verify HTTP publication and note the script checksum from publisher output.
+curl -fI http://172.31.31.183/iso/forgemill-esxi-import.sh
+sha256sum /var/lib/vz/template/iso/forgemill-esxi-import.sh
 ```
 
-The publisher downloads `import.sh` with certificate validation **on
-Linux**, validates POSIX syntax, computes its SHA-256, sets read permission
-for the web server, and atomically publishes to
-`/var/lib/vz/template/iso/forgemill-esxi-import.sh`. It never modifies
-VMs, the Proxmox package set or the OVA files. **Record its SHA-256 hash
-from the output and verify the same value on ESXi.** When you update
-GitHub, rerun the publisher to refresh the local script.
+The publisher uses verified HTTPS on Linux, validates shell syntax and
+atomically publishes `forgemill-esxi-import.sh`. It does **not** change
+any VM or OVA. It refreshes the server's copy **only when you run it**;
+changing GitHub alone does not refresh a previously published script.
 
-For reproducible installations, pin a trusted *full* Git commit SHA
-instead of using moving `main`: set `FORGEMILL_IMPORT_REF=...` when
-running the publisher. Optional `EXPECTED_SCRIPT_SHA256=...` verifies
-the fetched installer against an independently obtained hash.
+For reproducibility, set `FORGEMILL_IMPORT_REF` to a reviewed full
+40-character Git commit SHA rather than relying on the moving `main`
+branch. Use `EXPECTED_SCRIPT_SHA256` to validate independently obtained
+script digests.
 
-If the Linux image server also cannot reach GitHub, obtain the installer
-over a working authenticated channel on another workstation and
-securely copy it into the image server's `/var/lib/vz/template/iso/`
-directory, then verify its checksum and readability before publishing.
+## Step B: one-command setup on a fresh ESXi host
 
-### B. One command on EACH newly installed ESXi host
-
-Enable SSH, log in as root and run:
+Enable SSH on ESXi and log in as `root`. By default, the installer selects
+a writable VMFS datastore with at least **12 GiB free**, uses standard
+port group `VM Network`, and downloads all three image files from
+`http://172.31.31.183/iso`.
 
 ```sh
 wget -O /tmp/forgemill-esxi-import.sh http://172.31.31.183/iso/forgemill-esxi-import.sh && sh -n /tmp/forgemill-esxi-import.sh && sh /tmp/forgemill-esxi-import.sh check && sh /tmp/forgemill-esxi-import.sh all && sh /tmp/forgemill-esxi-import.sh status
 ```
 
-**Before running on a production host, compare**
-`sha256sum /tmp/forgemill-esxi-import.sh` to the SHA-256 printed by
-the trusted publisher in step A; the single command is a convenience,
-not a replacement for integrity verification.
-
-This command defaults to `http://172.31.31.183/iso` for the OVAs,
-chooses a writable VMFS datastore with at least 12 GiB available,
-and uses the port group **VM Network**. All imported source VMs remain
-powered **off**.
-
-To customize the datastore, port group and image-server URL after
-downloading:
+**Security:** HTTP does not authenticate scripts or VM images. For
+production, split the command after download and verify:
 
 ```sh
-DATASTORE='DISK1-raid1' PORTGROUP='VM Network' BASE_URL='http://172.31.31.183/iso' sh /tmp/forgemill-esxi-import.sh all
+sha256sum /tmp/forgemill-esxi-import.sh
 ```
 
-For stronger image-integrity protection, use independently verified hashes:
+Compare against the checksum printed on Proxmox, before executing the
+script. If the checksums do not match, stop. Pin the CHR checksum too:
 
 ```sh
-UBUNTU_SHA256='ACTUAL_64_HEX_DIGEST' CHR_7237_SHA256='ACTUAL_64_HEX_DIGEST' sh /tmp/forgemill-esxi-import.sh all
+CHR_721RC6_SHA256='YOUR_ACTUAL_64_HEX_SHA256' \
+DATASTORE='DISK1-raid1' PORTGROUP='VM Network' \
+BASE_URL='http://172.31.31.183/iso' \
+sh /tmp/forgemill-esxi-import.sh all
 ```
 
-Replace both placeholders with the actual hashes; otherwise omit those
-variables (the script warns for unsigned/unpinned HTTP sources). The
-Rocky OVA is pinned by default.
+Replace the placeholder with the VMDK's *actual* hash from Proxmox.
+If you omit it, the installer warns that the HTTP source is unauthenticated;
+it still computes a checksum and checks the converted VMDK chain. The
+Rocky VMware OVA is pinned automatically to its verified digest
+`2a58c89a81b456e6c90cdae6d2d23152799cd137a42207d50b40d538b4274f33`.
 
-On the image server, obtain hashes with:
-
-```bash
-cd /var/lib/vz/template/iso
-sha256sum ubuntu-24.04-server-cloudimg-amd64.ova chr-7.23.7-legacy-bios.ova rocky-9.8-forgemill-vmware.ova
-```
-
-### C. If the local HTTP download also fails
-
-On the ESXi host, test directly:
-
-```sh
-ping -c 2 172.31.31.183
-wget -O /tmp/forgemill-esxi-import.sh http://172.31.31.183/iso/forgemill-esxi-import.sh
-ls -lh /tmp/forgemill-esxi-import.sh
-```
-
-If the HTTP request times out, verify the image server is listening
-on TCP 80 and that the ESXi management network can route to it.
-A successful ping to GitHub says nothing about the TCP connection
-to GitHub's port 443. Do not disable ESXi's firewall globally,
-change DNS at random, or use an unauthenticated third-party script mirror.
-
-## Individual operations
+### Individual actions
 
 ```sh
 sh /tmp/forgemill-esxi-import.sh check
 sh /tmp/forgemill-esxi-import.sh ubuntu
 sh /tmp/forgemill-esxi-import.sh rocky
-sh /tmp/forgemill-esxi-import.sh mikrotik
-sh /tmp/forgemill-esxi-import.sh chr7196   # optional independent 7.19.6 diagnostic
+sh /tmp/forgemill-esxi-import.sh mikrotik    # CHR 7.21rc6 ONLY
+sh /tmp/forgemill-esxi-import.sh chr721rc6  # same as mikrotik
 sh /tmp/forgemill-esxi-import.sh status
 ```
 
-Backwards-compatible aliases: `rockyvmware` = `rocky`; `chr` / `chr7237` = `mikrotik`. The older Rocky OVA and CHR 7.19.6 are no longer part of `all`.
+The optional legacy `chr7196` mode is available for diagnostics.
+There is intentionally **no new 7.23.7 import mode**.
 
-Other optional variables: `BASE_URL`, `DATASTORE`, `PORTGROUP`, `MIN_FREE_GB`, `KEEP_SOURCE=1`, `KEEP_FAILED=1`, `WGET_NO_CHECK_CERT=1`. The latter bypasses validation for HTTPS OVA downloads and is not recommended. Imported VMs are powered **off** and are never automatically booted by the importer.
+## Safety and VM behavior
 
-## Security and idempotency
+The importer:
 
-The installer rejects an unrecognized ESXi version, missing VMware command-line tools, missing VM network, unwritable/insufficient VMFS, bad OVA manifest/whole-file checksum, unsupported firmware/controller, unsafe archive names, or conflicting existing legacy template registrations/directories. It converts one boot VMDK with `vmkfstools` and verifies its disk chain before publishing. It does not delete old VMs, alter ESXi networking/firewall or overwrite VM disks. Re-running after success skips already registered templates without updating their configuration; **a skip is not a replacement or deep VMX validation**.
+- Checks ESXi version, datastore, networking and available utilities.
+- Refuses registered source names and conflicting source directories.
+- Downloads OVA sources into staging, validates manifest hashes, checks
+  controller/firmware, then clones their VMDKs.
+- Downloads the 7.21rc6 **VMDK directly**, checks optional SHA-256, converts
+  it to native thin VMFS with `vmkfstools -i`, then runs `vmkfstools -e`.
+- Registers powered-off source VMs; does not power on, shut down, overwrite,
+  unregister or delete existing VMs.
+- Does not install or alter ESXi firewall, management NIC or DNS settings.
 
-Old source names that can block duplicate installation on the same host include `ubuntu-24.04-golden`, `ubuntu-24.04-main-template`, `rocky-9.8-golden`, `rocky-9.8-forgemill-main-template`, and `mikrotik-chr-7.23.7-main-template`. This is deliberate: do not create duplicates while deployments still reference the older source VM.
+A rerun skips existing templates rather than updating their VMX.
+The imported images are powered-off **VM sources**, not native vCenter
+template objects.
 
-## IMPORTANT: ForgeMill application cloning is a separate prerequisite
+**Caution about ForgeMill deployment:** The original upstream standalone
+ESXi fallback rebuilt MikroTik's IDE disks as SCSI and didn't preserve
+all template VMX settings. The working keyboard result was for a
+**directly created** 7.21rc6 VM, not a VM cloned by ForgeMill. A source
+import alone does not fix that application-side cloning problem.
+This repository has an opt-in
+[application patch](../patches/patch-forgemill-esxi-ide.py) and
+[build workflow](../.github/workflows/build-fork-syncfix.yml), but
+you must build, install and test the patched ForgeMill image separately.
+After syncing the ESXi target, test deploying a *new* disposable 7.21rc6
+VM and verify its console, firmware, disk controller, network and power.
 
-Standalone ESXi does not provide vCenter's native template objects; ForgeMill enumerates powered-off VMs as source templates. **Importing all three does not guarantee that the ForgeMill control panel can deploy all three.**
+CHR 7.21rc6 is a prerelease third-party image; evaluate provenance,
+security, licensing and RouterOS stability before production use.
 
-The unpatched upstream `blink-zero/forgemill` standalone-ESXi fallback constructs a SCSI controller even when the source disk is IDE. This can break MikroTik CHR boot, and it does not explicitly preserve the source's `keyboard.allowBothIRQs` VMX extraConfig. An ESXi shell importer cannot fix a deployment VM constructed by the ForgeMill application. Use a ForgeMill application build with the appropriate IDE/controller/keyboard preservation fix, and **boot-test a CHR clone** before considering it production-ready.
-
-Rocky's working `forgemill` password/DHCP/VMware Tools result was reported on ESXi-188. Ubuntu's cloud-init credentials/DHCP have **not been freshly revalidated** in this installation turn. On each new host, deploy one test clone of every image and validate login, network/console, VMware Tools when available, and guest reboot/persistence. CHR normally does not run the VMware Tools guest reboot integration.
-
-If ForgeMill's template sync fails with SQLite `FOREIGN KEY constraint failed (787)`, follow the separate, backup-first recovery steps in the [main project README](../README.md). Do not remove deployment references or disable foreign keys to force a sync.
-
-## MikroTik CHR keyboard does not accept typing on a NEW ForgeMill clone
-
-If the template boots and a MikroTik VM deployed through ForgeMill displays
-RouterOS but the ESXi console cannot type, check the **deployed VM** for
-`keyboard.allowBothIRQs = "FALSE"`. The main CHR template includes this
-setting, but an unpatched ForgeMill standalone-ESXi fallback does not always
-carry `ExtraConfig` into a newly created VM.
-
-There is a guarded, reversible ESXi-side repair:
-[fix-chr-console-keyboard.sh](fix-chr-console-keyboard.sh). It requires an
-explicit VMID, refuses template/golden names, prints its VMX and key hardware
-settings, backs up VMX before writing, does **not** power off any VM, and
-refuses to edit unless the clone is already **Powered off**. It then reloads
-the VMX configuration. It does not modify the source template.
-
-Because fresh ESXi hosts may hang on GitHub HTTPS, on the image server
-(`172.31.31.183`) first:
-
-```bash
-cd /var/lib/vz/template/iso
-curl -fL https://raw.githubusercontent.com/howard-99/forgemill-installer/main/esxi-templates/fix-chr-console-keyboard.sh -o fix-chr-console-keyboard.sh
-sh -n fix-chr-console-keyboard.sh
-chmod 644 fix-chr-console-keyboard.sh
-sha256sum fix-chr-console-keyboard.sh
-```
-
-On ESXi `172.31.31.192` (or another ESXi host), find **the new clone's**
-numeric VMID and then:
-
-```sh
-vim-cmd vmsvc/getallvms
-wget -O /tmp/fix-chr-console-keyboard.sh http://172.31.31.183/iso/fix-chr-console-keyboard.sh
-sh -n /tmp/fix-chr-console-keyboard.sh
-sha256sum /tmp/fix-chr-console-keyboard.sh
-sh /tmp/fix-chr-console-keyboard.sh inspect VMID
-```
-
-Compare the downloaded SHA-256 with the image-server result before
-executing. Replace `VMID` with the deployed CHR VM's numeric identifier.
-If the setting is missing, use the ESXi UI to **power off that test clone**
-(not a production router, and not the template) and run:
-
-```sh
-sh /tmp/fix-chr-console-keyboard.sh apply VMID
-```
-
-Then power on the clone and retest keyboard input. If the setting was
-already `FALSE`, investigate console/browser/device issues rather
-than appending a duplicate VMX key.
-
-**Long-term:** the [ForgeMill source patch](../patches/patch-forgemill-esxi-ide.py)
-and [optional image build](../.github/workflows/build-fork-syncfix.yml)
-preserve source IDE and keyboard configuration during standalone ESXi
-fallback deployments. These GitHub changes have **no effect** on an
-already-running upstream official ForgeMill image until the patched image
-has been successfully built, installed, and boot-tested.
-
-## After installation
-
-Open ForgeMill, connect to standalone ESXi on TCP 443 with an authorized account and suitable TLS validation settings, and sync templates. The source VMs must remain powered **off**. Confirm the three display names above and validate deploy/boot **on clones only**.
-
-The independent ESXi importer does not install the ForgeMill Ubuntu control-plane itself. That is the separate [installer](../install-forgemill.bash).
+See the main [repository README](../README.md) for first-priority fresh
+**Ubuntu ForgeMill installation** and recovery from ForgeMill template
+sync's SQLite FK-787 bug.
