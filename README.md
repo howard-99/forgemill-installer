@@ -4,6 +4,39 @@ A lightweight installer for [ForgeMill](https://github.com/blink-zero/forgemill/
 
 See [operational notes](NOTES.md) for storage, credentials, maintenance and validation details, and [the changelog](CHANGELOG.md) for changes.
 
+## Fresh ESXi host — three ready-to-import template sources
+
+The [ESXi importer v2.0](esxi-templates/import.sh) creates exactly three
+**powered-off** VM sources on a fresh ESXi 7.x/8.x host, with clean display
+names:
+
+- `Template-Ubuntu-24.04`
+- `Template-Rocky-9.8` (the operator-tested VMware-ready cloud image)
+- `Template-MikroTik-CHR-7.23.7` (Legacy BIOS + IDE + keyboard setting)
+
+The images must be hosted on your trusted image server. The default source
+is `http://172.31.31.183/iso` and the default ESXi port group is
+`VM Network`. From the **ESXi SSH shell as root**:
+
+```sh
+wget --no-check-certificate -O /tmp/forgemill-esxi-import.sh https://raw.githubusercontent.com/howard-99/forgemill-installer/main/esxi-templates/import.sh && sh -n /tmp/forgemill-esxi-import.sh && sh /tmp/forgemill-esxi-import.sh check && sh /tmp/forgemill-esxi-import.sh all && sh /tmp/forgemill-esxi-import.sh status
+```
+
+Use a pinned audited script revision and validate your image checksums in
+production; TLS verification is disabled for the GitHub download in this
+compatibility example. For explicit datastore, trusted OVA hashes, and
+full limitations see the [ESXi install instructions](esxi-templates/README.md).
+
+**Important:** The standalone-ESXi fallback in unpatched upstream ForgeMill
+may change the MikroTik IDE boot controller to SCSI. This repository also
+contains an [opt-in source patch](patches/patch-forgemill-esxi-ide.py) and
+[GitHub image build workflow](.github/workflows/build-fork-syncfix.yml)
+to address the application side. The patched image is not installed
+automatically; test CHR cloning, console input, and boot on each ESXi host
+before production.
+
+---
+
 ## ForgeMill ESXi template-sync foreign-key fix
 
 **Diagnosis on ESXi-188 (2026-10-15):** The official ForgeMill release's
@@ -14,17 +47,20 @@ records such as `rocky-9.8-golden` and `mikrotik-chr-7.24.5-golden`.
 
 This repository contains two remedies:
 
-**Permanent application patch (opt-in image, not yet published):**
+**Permanent application patches (opt-in image, not yet published):**
 [patches/patch-forgemill-template-sync.py](patches/patch-forgemill-template-sync.py)
 removes the unsafe deletion from upstream
-`internal/service/target.go`. The existing `INSERT ... ON CONFLICT
+`internal/service/target.go`. The
+[IDE/keyboard patch](patches/patch-forgemill-esxi-ide.py) also attempts to
+preserve the MikroTik controller and IRQ setting during standalone ESXi
+fallback cloning. Both patches are included when building the patched image. The existing `INSERT ... ON CONFLICT
 (target_id, moref) DO UPDATE` refreshes synchronized templates in place.
 Template IDs and dependent history survive. **Trade-off:** this conservative
 interim fix leaves stale templates visible until a separate, dependency-aware
 pruning feature is developed.
 
 To build the patched image in GitHub, open **Actions → Build patched
-ForgeMill image (template sync FK fix) → Run workflow**, and enter an
+ForgeMill image (ESXi sync + CHR IDE fixes) → Run workflow**, and enter an
 official ForgeMill release tag, e.g. `v0.21.0`, **matching the version you
 intend to run**. This checks out the upstream tag, fails if the vulnerable
 code doesn't match, applies the patch, and publishes:
