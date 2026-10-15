@@ -1,7 +1,7 @@
 #!/bin/sh
-# ForgeMill ESXi Main Template Importer — v1.5
+# ForgeMill ESXi Main Template Importer — v1.6
 # ESXi 7.x / 8.x BusyBox/POSIX sh; no external VM management workstation required.
-# Usage: sh forgemill-esxi-import.sh [all|ubuntu|chr|rocky|check|status]
+# Usage: sh forgemill-esxi-import.sh [all|ubuntu|chr|chr7196|chr7237|rocky|check|status]
 # Imported VMs remain powered OFF. Nothing registered or stored previously is deleted.
 set -eu
 
@@ -27,13 +27,15 @@ warn() { printf '[WARN] %s\n' "$*" >&2; }
 fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
 case "$MODE" in
-  all|ubuntu|chr|mikrotik|rocky|check|status) ;;
+  all|ubuntu|chr|mikrotik|chr7196|chr7237|rocky|check|status) ;;
   -h|--help|help)
     cat <<'HELP'
 Usage: sh forgemill-esxi-import.sh [MODE]
-  all       Import Ubuntu 24.04, MikroTik CHR 7.24.5, Rocky 9.8 (default)
+  all       Import Ubuntu 24.04, Rocky 9.8, CHR 7.19.6 + 7.23.7 (default)
   ubuntu    Import Ubuntu 24.04 only
-  chr       Import MikroTik CHR 7.24.5 only (alias mikrotik)
+  chr       Import BOTH tested MikroTik Legacy BIOS images (alias mikrotik)
+  chr7196   Import MikroTik CHR 7.19.6 Legacy BIOS only
+  chr7237   Import MikroTik CHR 7.23.7 Legacy BIOS only
   rocky     Import Rocky Linux 9.8 only
   check     Display datastores/VM networks and selected target datastore
   status    Display registered virtual machines; no changes
@@ -45,15 +47,19 @@ Optional environment variables:
   MIN_FREE_GB=12         Minimum free storage required before import
   KEEP_SOURCE=1          Preserve downloaded/extracted OVA files after success
   KEEP_FAILED=1          Preserve failed staging directory for diagnostics
+  CHR_7196_SHA256=...    Optional trusted OVA SHA256 for CHR 7.19.6
+  CHR_7237_SHA256=...    Optional trusted OVA SHA256 for CHR 7.23.7
   WGET_NO_CHECK_CERT=1   Bypass TLS certificate validation for HTTPS OVA only (insecure)
 
 Safety: never overwrite existing templates, delete original VM disks, change
 firewall rules, or power on imported images. Use a dedicated VM network.
 Standalone ESXi has no native vCenter template objects: these are tagged,
 powered-off main-template source VMs for ForgeMill cloning.
+WARNING: ForgeMill's upstream standalone-ESXi fallback may recreate IDE
+boot disks as SCSI disks. Import alone does not fix that cloning bug.
 HELP
     exit 0 ;;
-  *) fail "Unknown mode '$MODE'. Use all, ubuntu, chr, rocky, check or status." ;;
+  *) fail "Unknown mode '$MODE'. Use all, ubuntu, chr, chr7196, chr7237, rocky, check or status." ;;
 esac
 
 # ESXi 7 may expose commands in different directories and some BusyBox
@@ -98,7 +104,7 @@ if [ "$MODE" = status ]; then
   say 'VM inventory and ForgeMill main-template sources'
   inventory=$(vim-cmd vmsvc/getallvms) || fail 'Cannot list ESXi VMs'
   printf '%s\n' "$inventory"
-  for name in ubuntu-24.04-main-template mikrotik-chr-7.24.5-main-template rocky-9.8-main-template; do
+  for name in ubuntu-24.04-main-template rocky-9.8-main-template mikrotik-chr-7.19.6-main-template mikrotik-chr-7.23.7-main-template; do
     id=$(printf '%s\n' "$inventory" | awk -v n="$name" '$1 ~ /^[0-9]+$/ && $2==n {print $1; exit}')
     if [ -z "$id" ]; then
       info "NOT FOUND: $name"
@@ -211,7 +217,8 @@ case "$WGET_NO_CHECK_CERT" in 0|1) ;; *) fail 'WGET_NO_CHECK_CERT must be 0 or 1
 
 if [ "$MODE" = check ]; then
   say 'Preflight PASS'
-  info "OVAs: $BASE_URL/{ubuntu-24.04-server-cloudimg-amd64.ova,chr-7.24.5.ova,rocky-9.8.ova}"
+  info "OVAs under $BASE_URL: ubuntu-24.04-server-cloudimg-amd64.ova, rocky-9.8.ova, chr-7.19.6-legacy-bios.ova, chr-7.23.7-legacy-bios.ova"
+  info 'No image files downloaded or boot-tested in check mode.'
   info 'No VMs were changed.'
   exit 0
 fi
@@ -344,6 +351,8 @@ trap 'exit 129' HUP
 
 import_image() {
   kind=$1
+  IS_CHR=0
+  EXPECTED_SHA256=''
   case "$kind" in
     ubuntu)
       VMNAME='ubuntu-24.04-main-template'
@@ -354,14 +363,27 @@ import_image() {
       FW_DEFAULT=bios
       CTRL_DEFAULT='6|VirtualSCSI'
       ;;
-    chr)
-      VMNAME='mikrotik-chr-7.24.5-main-template'
-      LEGACY_VMNAME='mikrotik-chr-7.24.5-golden'
-      FILE='chr-7.24.5.ova'
+    chr7196)
+      VMNAME='mikrotik-chr-7.19.6-main-template'
+      LEGACY_VMNAME='mikrotik-chr-7.19.6-golden'
+      FILE='chr-7.19.6-legacy-bios.ova'
       GUEST='otherLinux64Guest'
       RAM=1024
-      FW_DEFAULT=efi
+      FW_DEFAULT=bios
       CTRL_DEFAULT='5|IDE'
+      IS_CHR=1
+      EXPECTED_SHA256=${CHR_7196_SHA256:-}
+      ;;
+    chr7237)
+      VMNAME='mikrotik-chr-7.23.7-main-template'
+      LEGACY_VMNAME='mikrotik-chr-7.23.7-golden'
+      FILE='chr-7.23.7-legacy-bios.ova'
+      GUEST='otherLinux64Guest'
+      RAM=1024
+      FW_DEFAULT=bios
+      CTRL_DEFAULT='5|IDE'
+      IS_CHR=1
+      EXPECTED_SHA256=${CHR_7237_SHA256:-}
       ;;
     rocky)
       VMNAME='rocky-9.8-main-template'
@@ -419,9 +441,23 @@ import_image() {
   done
   [ "$success" -eq 1 ] || fail "OVA download failed: $BASE_URL/$FILE"
   [ -s "$OVA" ] || fail 'Downloaded OVA is empty'
+  if [ -n "$EXPECTED_SHA256" ]; then
+    case "$EXPECTED_SHA256" in
+      *[!0-9a-fA-F]*) fail "Expected SHA256 has non-hex characters for $VMNAME" ;;
+    esac
+    [ "${#EXPECTED_SHA256}" -eq 64 ] || fail "Expected SHA256 must be 64 hex characters for $VMNAME"
+    find_exec sha256sum >/dev/null 2>&1 || fail 'sha256sum is required for expected OVA checksum verification'
+  elif [ "$IS_CHR" = 1 ]; then
+    warn "No trusted expected SHA256 provided for $VMNAME; HTTP and an OVA checksum alone do not authenticate the source"
+  fi
   if find_exec sha256sum >/dev/null 2>&1; then
     OVA_SHA256=$(sha256sum "$OVA" | awk '{print $1}')
     info "Downloaded OVA SHA256: $OVA_SHA256"
+    if [ -n "$EXPECTED_SHA256" ]; then
+      expected_lower=$(printf '%s' "$EXPECTED_SHA256" | awk '{print tolower($0)}')
+      [ "$OVA_SHA256" = "$expected_lower" ] || fail "OVA SHA256 mismatch for $VMNAME"
+      info 'Verified OVA SHA256 against expected checksum'
+    fi
   else
     OVA_SHA256='unavailable (sha256sum not installed)'
     warn 'Cannot record whole-OVA SHA256 checksum'
@@ -483,6 +519,10 @@ import_image() {
       ;;
     *) fail "Unsupported OVF boot controller type $CTL_TYPE ($CTL_DESC); refusing to guess" ;;
   esac
+  if [ "$IS_CHR" = 1 ]; then
+    [ "$FW" = bios ] || fail "$FILE requires BIOS; OVF selected '$FW'"
+    [ "$DISK_CTRL" = ide ] || fail "$FILE requires IDE boot disk; OVF selected '$DISK_CTRL'"
+  fi
   info "Boot setup from OVF: firmware=$FW, disk=$DISK_CTRL ${DISK_SUB:-}, network=vmxnet3"
 
   say 'Converting stream VMDK to native thin VMFS disk'
@@ -505,6 +545,11 @@ numvcpus = "2"
 memSize = "$RAM"
 firmware = "$FW"
 EOF_VMX
+  if [ "$IS_CHR" = 1 ]; then
+    # Tested operator workaround for CHR console keyboard (PS/2 IRQ handling).
+    # Do not add a virtual USB keyboard: it was not required for this fix.
+    printf '%s\n' 'keyboard.allowBothIRQs = "FALSE"' >> "$VMX"
+  fi
   if [ "$DISK_CTRL" = ide ]; then
     cat >> "$VMX" <<EOF_DISK
 ide0:0.present = "TRUE"
@@ -530,6 +575,11 @@ tools.syncTime = "TRUE"
 EOF_NIC
 
   grep -qx 'guestinfo.forgemill.role = "main-template"' "$VMX" || fail 'Missing ForgeMill template marker'
+  if [ "$IS_CHR" = 1 ]; then
+    grep -qx 'keyboard.allowBothIRQs = "FALSE"' "$VMX" || fail 'Missing CHR keyboard fix'
+    grep -qx 'ide0:0.present = "TRUE"' "$VMX" || fail 'Missing CHR IDE boot disk'
+    grep -qx 'firmware = "bios"' "$VMX" || fail 'Missing CHR legacy BIOS firmware'
+  fi
   grep -qx "firmware = \"$FW\"" "$VMX" || fail 'Malformed firmware line in VMX'
   grep -qx 'ethernet0.startConnected = "TRUE"' "$VMX" || fail 'Malformed ethernet setting'
   grep -qx 'disk.EnableUUID = "TRUE"' "$VMX" || fail 'Malformed disk UUID setting'
@@ -540,12 +590,13 @@ EOF_NIC
   # Keep a small audit record so you can diagnose boot/OVF differences later.
   cp "$OVF" "$STAGE/original-template.ovf"
   cat > "$STAGE/IMPORT-INFO.txt" <<EOF_IMPORT
-Imported by ForgeMill ESXi Main Template Importer v1.5
+Imported by ForgeMill ESXi Main Template Importer v1.6
 Template: $VMNAME
 OVA source: $BASE_URL/$FILE
 OVA SHA256: $OVA_SHA256
 Firmware: $FW
 Disk controller: $DISK_CTRL ${DISK_SUB:-}
+CHR keyboard workaround: $IS_CHR (keyboard.allowBothIRQs = FALSE when 1)
 ESXi datastore: $DS
 Network port group: $PORTGROUP
 ESXi build: $ESXI_VER
@@ -576,16 +627,25 @@ EOF_IMPORT
   printf '%s\n' "$power_state" | grep -q 'Powered off' || fail 'Main-template source VM is unexpectedly powered on'
   info "SUCCESS: $VMNAME (VMID $VMID) at $FINAL"
   info 'Registered as a powered-off, annotated ForgeMill template source; native vCenter templates require vCenter.'
+  if [ "$IS_CHR" = 1 ]; then
+    warn 'CHR source is BIOS + IDE with keyboard workaround, but upstream ForgeMill ESXi fallback can change IDE to SCSI. Test/fix the clone path before production.'
+  fi
 }
 
 case "$MODE" in
   all)
     import_image ubuntu
-    import_image chr
+    import_image chr7196
+    import_image chr7237
     import_image rocky
     ;;
   ubuntu) import_image ubuntu ;;
-  chr|mikrotik) import_image chr ;;
+  chr|mikrotik)
+    import_image chr7196
+    import_image chr7237
+    ;;
+  chr7196) import_image chr7196 ;;
+  chr7237) import_image chr7237 ;;
   rocky) import_image rocky ;;
 esac
 
