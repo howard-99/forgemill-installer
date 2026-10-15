@@ -16,9 +16,15 @@ MODE=$1
 VMID=$2
 case "$MODE" in inspect|apply) ;; *) fail 'Mode must be inspect or apply' ;; esac
 case "$VMID" in ''|*[!0-9]*) fail 'VMID must be a decimal ESXi VM identifier';; esac
-command -v vim-cmd >/dev/null 2>&1 || fail 'This script must run in ESXi shell (vim-cmd missing)'
+# Some ESXi 7 BusyBox shells do not implement 'command -v' consistently.
+# Resolve VMware's executable by absolute path, as the working ESXi importer does.
+VIM_CMD=''
+for candidate in /bin/vim-cmd /sbin/vim-cmd /usr/bin/vim-cmd /usr/sbin/vim-cmd; do
+  if [ -x "$candidate" ]; then VIM_CMD=$candidate; break; fi
+done
+[ -n "$VIM_CMD" ] || fail 'vim-cmd executable not found in VMware ESXi system directories'
 
-VMROW=$(vim-cmd vmsvc/getallvms | awk -v n="$VMID" '$1 == n {print; exit}') ||
+VMROW=$($VIM_CMD vmsvc/getallvms | awk -v n="$VMID" '$1 == n {print; exit}') ||
   fail 'Unable to query ESXi inventory'
 [ -n "$VMROW" ] || fail "VMID $VMID is not registered on this host"
 VMNAME=$(printf '%s\n' "$VMROW" | awk '{print $2}')
@@ -26,7 +32,7 @@ case "$(printf '%s\n' "$VMNAME" | tr '[:upper:]' '[:lower:]')" in
   *template*|*golden*) fail "Refusing to change source VM named $VMNAME; select the DEPLOYED MikroTik clone" ;;
 esac
 
-CFG=$(vim-cmd vmsvc/get.config "$VMID") || fail "Cannot retrieve config for VMID $VMID"
+CFG=$("$VIM_CMD" vmsvc/get.config "$VMID") || fail "Cannot retrieve config for VMID $VMID"
 VMX_REF=$(printf '%s\n' "$CFG" | sed -n 's/^[[:space:]]*vmPathName = "\([^"]*\.vmx\)".*/\1/p' | head -n 1)
 case "$VMX_REF" in
   '['*'] '*'.vmx') ;;
@@ -41,7 +47,11 @@ VMX="/vmfs/volumes/$DS/$REL"
 
 info "VM: $VMNAME (VMID $VMID)"
 info "VMX: $VMX"
-STATE=$(vim-cmd vmsvc/power.getstate "$VMID") || fail "Cannot query VM power state $VMID"
+# A source template is protected even if somebody renamed it.
+if grep -Eqi '^[[:space:]]*guestinfo\.forgemill\.role[[:space:]]*=[[:space:]]*"main-template"' "$VMX"; then
+  fail 'This VMX is marked as a ForgeMill main-template; refusing to modify it'
+fi
+STATE=$("$VIM_CMD" vmsvc/power.getstate "$VMID") || fail "Cannot query VM power state $VMID"
 printf '%s\n' "$STATE"
 grep -Ei '^[[:space:]]*(firmware|ide0:0.present|scsi0:0.present|keyboard\.allowBothIRQs)[[:space:]]*=' "$VMX" || true
 
@@ -69,7 +79,7 @@ printf '\nkeyboard.allowBothIRQs = "FALSE"\n' >> "$VMX" ||
 grep -Eq '^keyboard\.allowBothIRQs = "FALSE"$' "$VMX" ||
   fail 'Written VMX option failed verification'
 
-vim-cmd vmsvc/reload "$VMID" || fail "VMX changed but reload failed; backup: $BACKUP"
+"$VIM_CMD" vmsvc/reload "$VMID" || fail "VMX changed but reload failed; backup: $BACKUP"
 info "Repair applied and VM configuration reloaded. Original VMX: $BACKUP"
 info 'Now power on this TEST clone and check keyboard input at the RouterOS login prompt.'
 info 'A new ForgeMill deployment needs the application-side keyboard extraConfig patch too.'
