@@ -4,8 +4,6 @@ A lightweight installer for [ForgeMill](https://github.com/blink-zero/forgemill/
 
 See [operational notes](NOTES.md) for storage, credentials, maintenance and validation details, and [the changelog](CHANGELOG.md) for changes.
 
----
-
 ## One-command installation
 
 On a fresh **Ubuntu 22.04, 24.04 or 26.04 LTS x86-64 (amd64)** server, paste this entire command into the terminal from your home directory:
