@@ -76,6 +76,16 @@ class ESXiImporterTests(unittest.TestCase):
         )
         self.assertNotIn("chr7196", default["body"])
 
+    def test_guest_os_uses_raw_vmx_ids_not_api_enums(self):
+        # VMX uses 'ubuntu-64'/'otherlinux-64'; vSphere API enums such
+        # as 'otherLinux64Guest' cause UnsupportedGuest when booting.
+        self.assertIn("GUEST='ubuntu-64'", self.text)
+        self.assertEqual(self.text.count("GUEST='otherlinux-64'"), 3)
+        self.assertNotIn("GUEST='ubuntu64Guest'", self.text)
+        self.assertNotIn("GUEST='otherLinux64Guest'", self.text)
+        self.assertIn('case "$GUEST" in', self.text)
+        self.assertIn('Invalid raw VMX guestOS identifier', self.text)
+
     def test_ubuntu_trusted_hash_option(self):
         self.assertIn("FILE='ubuntu-24.04-server-cloudimg-amd64.ova'", self.text)
         self.assertIn("EXPECTED_SHA256=${UBUNTU_SHA256:-}", self.text)
