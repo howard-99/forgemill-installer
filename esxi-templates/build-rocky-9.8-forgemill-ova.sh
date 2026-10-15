@@ -13,6 +13,13 @@ VMDK=$WORK/$NAME-disk1.vmdk
 OVF=$WORK/$NAME.ovf
 MF=$WORK/$NAME.mf
 OUTPUT=$ISO_DIR/$NAME.ova
+# libguestfs QEMU appliance: use a practical subset of the build VM's resources.
+BUILD_VCPUS=${BUILD_VCPUS:-4}
+BUILD_RAM_MB=${BUILD_RAM_MB:-1536}
+case "$BUILD_VCPUS" in ''|*[!0-9]*) echo "Invalid BUILD_VCPUS" >&2; exit 1 ;; esac
+case "$BUILD_RAM_MB" in ''|*[!0-9]*) echo "Invalid BUILD_RAM_MB" >&2; exit 1 ;; esac
+(( BUILD_VCPUS >= 2 && BUILD_VCPUS <= 8 )) || { echo "BUILD_VCPUS must be 2-8" >&2; exit 1; }
+(( BUILD_RAM_MB >= 1024 && BUILD_RAM_MB <= 2048 )) || { echo "BUILD_RAM_MB must be 1024-2048" >&2; exit 1; }
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
@@ -26,6 +33,7 @@ for exe in qemu-img virt-customize virt-inspector python3 sha256sum cp; do
   command -v "$exe" >/dev/null || die "Missing $exe; apt install qemu-utils libguestfs-tools python3"
 done
 
+info "Appliance resources: ${BUILD_VCPUS} vCPUs, ${BUILD_RAM_MB} MB RAM"
 info 'Validating source QCOW2'
 qemu-img info -f qcow2 "$SOURCE"
 qemu-img check -f qcow2 "$SOURCE"
@@ -75,7 +83,13 @@ restore_resolver() {
   fi
 }
 trap restore_resolver EXIT
-printf '%s\n' 'nameserver 1.1.1.1' 'nameserver 8.8.8.8' > /etc/resolv.conf
+# QEMU SLIRP defaults to its built-in DNS proxy at 10.0.2.3;
+# direct public DNS queries may be blocked by the host network.
+printf '%s\n' 'nameserver 10.0.2.3' > /etc/resolv.conf
+echo '[rocky-build] Appliance IP configuration:'
+ip -4 -br addr || true
+ip -4 route || true
+cat /etc/resolv.conf
 echo '[rocky-build] Checking DNS inside the libguestfs guest environment'
 getent ahostsv4 mirrors.rockylinux.org >/dev/null || {
   echo '[rocky-build] Guest DNS failed even with explicit resolvers; check libguestfs QEMU user networking/firewall' >&2
@@ -86,7 +100,7 @@ dnf -y install cloud-init open-vm-tools NetworkManager openssh-server sudo
 EOF_PACKAGES
 chmod 700 "$WORK/install-packages.sh"
 info 'Installing VMware tools, cloud-init and DHCP/SSH integration'
-virt-customize --network -a "$QCOW2" \
+virt-customize --network --smp "$BUILD_VCPUS" --memsize "$BUILD_RAM_MB" -a "$QCOW2" \
  --run "$WORK/install-packages.sh" \
  --mkdir /etc/ssh/sshd_config.d \
  --copy-in "$WORK/91-forgemill-vmware.cfg:/etc/cloud/cloud.cfg.d" \
@@ -102,7 +116,7 @@ virt-customize --network -a "$QCOW2" \
 # Optional break-glass SSH-key-only account; never bake shared passwords.
 if [[ -n "${RECOVERY_PUBKEY_FILE:-}" ]]; then
  [[ -s "$RECOVERY_PUBKEY_FILE" ]] || die "Missing key: $RECOVERY_PUBKEY_FILE"
- virt-customize -a "$QCOW2" \
+ virt-customize --smp "$BUILD_VCPUS" --memsize "$BUILD_RAM_MB" -a "$QCOW2" \
   --run-command 'id fmrecovery >/dev/null 2>&1 || useradd -m -s /bin/bash -G wheel fmrecovery' \
   --run-command 'passwd -l fmrecovery || true' \
   --run-command 'install -d -m 0700 -o fmrecovery -g fmrecovery /home/fmrecovery/.ssh' \
