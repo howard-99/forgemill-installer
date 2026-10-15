@@ -2,16 +2,18 @@
 
 A standalone BusyBox/POSIX-shell importer for **VMware ESXi 7.x/8.x**. It prepares powered-off main-template source VMs for discovery by [ForgeMill](https://github.com/blink-zero/forgemill), without installing Python, Docker, or OVF Tool on the ESXi host.
 
-This is the **v1.5 importer (v1.4 previously tested on ESXi 7.0.3; v1.5 requires host validation)** by the project operator. Other hardware, OVA variants and ESXi releases should be tested before production use.
+This is the **v1.6 importer (previous v1.4 tested on ESXi 7.0.3; current four-image installation still requires ESXi validation)** by the project operator. Other hardware, OVA variants and ESXi releases should be tested before production use.
 
 ## Images
 
 | Mode | Powered-off VM name | Expected image filename |
 | --- | --- | --- |
 | `ubuntu` | `ubuntu-24.04-main-template` | `ubuntu-24.04-server-cloudimg-amd64.ova` |
-| `chr` | `mikrotik-chr-7.24.5-main-template` | `chr-7.24.5.ova` |
+| `chr7196` | `mikrotik-chr-7.19.6-main-template` | `chr-7.19.6-legacy-bios.ova` |
+| `chr7237` | `mikrotik-chr-7.23.7-main-template` | `chr-7.23.7-legacy-bios.ova` |
+| `chr` / `mikrotik` | Both MikroTik legacy BIOS images | Both OVAs |
 | `rocky` | `rocky-9.8-main-template` | `rocky-9.8.ova` |
-| `all` | All three | All three files |
+| `all` | Ubuntu + Rocky + both CHR images | Four OVA files |
 
 **OVAs are not included**. Host your own legal, trusted images on an HTTP(S) server accessible from each ESXi management network. The initial default is `http://172.31.31.183/iso` (a private LAN address from the original deployment); **override `BASE_URL` on other networks**.
 
@@ -32,6 +34,8 @@ sh /tmp/forgemill-esxi-import.sh all
 # or:
 sh /tmp/forgemill-esxi-import.sh rocky
 sh /tmp/forgemill-esxi-import.sh chr
+sh /tmp/forgemill-esxi-import.sh chr7196
+sh /tmp/forgemill-esxi-import.sh chr7237
 sh /tmp/forgemill-esxi-import.sh ubuntu
 sh /tmp/forgemill-esxi-import.sh status
 ```
@@ -56,7 +60,15 @@ The installer selects a writable mounted VMFS datastore with the most available 
 BASE_URL='http://YOUR-IMAGE-SERVER/iso' PORTGROUP='VM Network' DATASTORE='DISK1-raid1' sh /tmp/forgemill-esxi-import.sh all
 ```
 
-Optional settings: `BASE_URL`, `PORTGROUP`, `DATASTORE`, `MIN_FREE_GB`, `KEEP_SOURCE=1`, `KEEP_FAILED=1`, `WGET_NO_CHECK_CERT=1` (only for HTTPS OVA downloads; insecure). The initial GitHub script download requires its own `--no-check-certificate` flag on affected ESXi builds.
+Optional settings: `BASE_URL`, `PORTGROUP`, `DATASTORE`, `MIN_FREE_GB`, `KEEP_SOURCE=1`, `KEEP_FAILED=1`, `CHR_7196_SHA256`, `CHR_7237_SHA256`, `WGET_NO_CHECK_CERT=1` (only for HTTPS OVA downloads; insecure). The initial GitHub script download requires its own `--no-check-certificate` flag on affected ESXi builds.
+
+## MikroTik CHR compatibility and keyboard fix
+
+The default importer now includes **two independently named Legacy BIOS CHR sources**, 7.19.6 and 7.23.7. Each is forced to **BIOS + IDE (0:0)** after inspecting the OVF. The VMX includes `keyboard.allowBothIRQs = "FALSE"`, the operator-reported keyboard workaround on ESXi-188. No USB virtual keyboard setting is required. This observation does not prove that the workaround is universal across all ESXi versions or hardware.
+
+The installer defaults to `http://172.31.31.183/iso`, where both exact legacy BIOS OVA names must be available; it does not import the UEFI `chr-7.x.ova` images as CHR sources. Ensure files are trusted. Optional `CHR_7196_SHA256` and `CHR_7237_SHA256` values enforce expected digest matching; for example, obtain each trusted hash on the source machine before running the import. Existing templates are skipped without changing their VMX settings.
+
+**Deployment limitation:** The upstream `blink-zero/forgemill` standalone-ESXi fallback currently does not preserve IDE boot controllers and can recreate disks as SCSI. A correctly imported and keyboard-configured source VM is **not enough** to guarantee ForgeMill-deployed CHR VMs boot or inherit the keyboard fix. The upstream clone fallback must preserve disk controller, source firmware, and keyboard-related extraConfig, then be regression-tested for both CHR versions. The installer in this repository cannot patch the running ForgeMill binary.
 
 ## Source VM vs native template
 
@@ -82,7 +94,7 @@ The importer never automatically replaces or renames existing `*-golden` VMs. If
 - `check` probes datastore writability with a temporary empty directory (no VM modifications).
 - A successful import is **not proof that the guest OS or cloud-init boots correctly**. Validate guest networking, VMware Tools, credentials and disk growth with a test clone.
 - ForgeMill's standalone-ESXi provider considers powered-off VMs as template sources; they are not native vCenter templates. A matching annotation and VMX guestinfo marker make their intended role explicit.
-- `mikrotik`/`chr` images require RouterOS-specific first-boot setup and licensing.
+- `mikrotik`/`chr` images require RouterOS-specific first-boot setup and licensing. Test console input via ESXi web console and VMRC after cloning; guest reboot requires VMware Tools support and may be unavailable.
 
 ## Validation
 
