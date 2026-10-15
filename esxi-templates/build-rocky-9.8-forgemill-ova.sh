@@ -75,7 +75,7 @@ restore_resolver() {
   fi
 }
 trap restore_resolver EXIT
-printf '%s\\n' 'nameserver 1.1.1.1' 'nameserver 8.8.8.8' > /etc/resolv.conf
+printf '%s\n' 'nameserver 1.1.1.1' 'nameserver 8.8.8.8' > /etc/resolv.conf
 echo '[rocky-build] Checking DNS inside the libguestfs guest environment'
 getent ahostsv4 mirrors.rockylinux.org >/dev/null || {
   echo '[rocky-build] Guest DNS failed even with explicit resolvers; check libguestfs QEMU user networking/firewall' >&2
