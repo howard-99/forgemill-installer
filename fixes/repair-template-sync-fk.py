@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Opt-in, reversible workaround for ForgeMill sync foreign-key error 787.
+"""Reversible temporary workaround for ForgeMill template sync FK error (787).
 
-Upstream old releases delete unmanaged templates during sync, even when
-historical deployment/build records refer to them. Install a SQLite BEFORE
-DELETE trigger that silently SKIPS only those deletes which would violate a
-known template foreign key. This does not change or delete any existing rows.
+Unpatched ForgeMill deletes unmanaged template rows on every target sync,
+even when a deployment/history table references them. This creates a
+BEFORE DELETE trigger which skips only those deletes that would break
+a declared FK to templates. It protects ALL targets (including targets
+added after the fix). It does not alter or delete any existing rows.
 
-Use only until patched application image is deployed.
-Run with the ForgeMill container STOPPED.
+This is NOT the permanent application-code patch. Run --apply/--remove
+as root on ForgeMill's Ubuntu host with the 'forgemill' Docker container
+STOPPED, then restart it once the integrity check completes.
+
+Without --apply or --remove the script is read-only.
 """
 from __future__ import annotations
 
@@ -23,20 +27,37 @@ SOURCE = Path("/opt/forgemill/data/forgemill.db")
 BACKUP_DIR = Path("/opt/forgemill/backups")
 NAME = "forgemill_template_sync_fk_guard"
 
+
 def qi(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
-def docker_running() -> bool:
-    check = subprocess.run(
-        ["docker", "inspect", "--format", "{{.State.Running}}", "forgemill"],
-        capture_output=True, text=True, check=False
-    )
-    return check.returncode == 0 and check.stdout.strip().lower() == "true"
+
+def require_stopped_container() -> None:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Running}}", "forgemill"],
+            capture_output=True, text=True, check=False, timeout=15
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("Cannot verify ForgeMill container is stopped: " + str(exc))
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Cannot inspect ForgeMill container; refusing database modification: "
+            + result.stderr.strip()
+        )
+    state = result.stdout.strip().lower()
+    if state != "false":
+        raise RuntimeError(
+            "Stop ForgeMill container first; docker inspect Running=" + repr(state)
+        )
+
 
 def foreign_key_guards(db: sqlite3.Connection) -> list[str]:
-    tables = [x[0] for x in db.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-    )]
+    tables = [
+        x[0] for x in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
+    ]
     clauses: list[str] = []
     for table in tables:
         groups: dict[int, list] = {}
@@ -45,109 +66,147 @@ def foreign_key_guards(db: sqlite3.Connection) -> list[str]:
                 groups.setdefault(row[0], []).append(row)
         for rows in groups.values():
             if len(rows) != 1:
-                raise RuntimeError("Composite FK to templates found in " + table + "; cannot install safeguard")
+                raise RuntimeError("Composite FK to templates in " + table + "; aborting")
             fk = rows[0]
             if fk[4] not in ("", "id", None):
-                raise RuntimeError("Non-id reference to templates found in " + table)
+                raise RuntimeError("Non-ID reference to templates in " + table + "; aborting")
             clauses.append(
                 f"EXISTS (SELECT 1 FROM {qi(table)} WHERE {qi(fk[3])} = OLD.id)"
             )
+    if not clauses:
+        raise RuntimeError("No declared foreign keys to templates found; aborting")
     return clauses
 
-def sql_for(target_id: int, clauses: list[str]) -> str:
-    if not clauses:
-        raise RuntimeError("No template FK relationships found; inspect schema first")
+
+def desired_sql(clauses: list[str]) -> str:
     return (
         f"CREATE TRIGGER {qi(NAME)} BEFORE DELETE ON templates FOR EACH ROW "
-        f"WHEN OLD.target_id = {target_id} AND (" + " OR ".join(clauses) +
+        "WHEN (" + " OR ".join(clauses) +
         ") BEGIN SELECT RAISE(IGNORE); END"
     )
 
+
+def approved_existing(sql: str, clauses: list[str]) -> bool:
+    # Permit only the older target-specific guard from this same installer.
+    # Never silently replace arbitrary triggers written by an administrator.
+    if "OLD.target_id" not in sql or "RAISE(IGNORE)" not in sql:
+        return False
+    if "BEFORE DELETE ON templates" not in sql:
+        return False
+    return all(clause in sql for clause in clauses)
+
+
+def describe(db: sqlite3.Connection) -> None:
+    tables = {
+        x[0] for x in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if "targets" in tables:
+        cols = {x[1] for x in db.execute("PRAGMA table_info(targets)")}
+        if {"id", "name"}.issubset(cols):
+            print("ForgeMill targets:")
+            for target_id, name in db.execute("SELECT id,name FROM targets ORDER BY id"):
+                print("  ", target_id, name)
+    if "templates" in tables:
+        cols = {x[1] for x in db.execute("PRAGMA table_info(templates)")}
+        if {"id", "name", "target_id"}.issubset(cols):
+            print("Template rows by target:")
+            for tid, num in db.execute(
+                "SELECT target_id,COUNT(*) FROM templates GROUP BY target_id ORDER BY target_id"
+            ):
+                print("  ", tid, num)
+
+
+def verify(db: sqlite3.Connection) -> None:
+    result = db.execute("PRAGMA integrity_check").fetchone()[0]
+    if result != "ok":
+        raise RuntimeError("SQLite integrity_check failed: " + result)
+    violations = db.execute("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        raise RuntimeError(
+            "Existing foreign-key violations detected; refusing change: "
+            + repr(violations[:10])
+        )
+    print("Integrity: ok; foreign_key_check: ok")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--apply", action="store_true", help="Backup and install temporary trigger")
-    group.add_argument("--remove", action="store_true", help="Backup and remove temporary trigger")
-    parser.add_argument("--target-id", type=int, default=1)
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("--apply", action="store_true",
+                         help="Back up SQLite and protect all targets")
+    actions.add_argument("--remove", action="store_true",
+                         help="Back up SQLite and remove the temporary guard")
     args = parser.parse_args()
-    if args.target_id <= 0:
-        parser.error("target ID must be positive")
-    if not SOURCE.is_file():
-        raise RuntimeError(f"Missing DB {SOURCE}")
     if os.geteuid() != 0:
         raise RuntimeError("Run as root on the ForgeMill Ubuntu host")
-    if docker_running() and (args.apply or args.remove):
-        raise RuntimeError("Stop ForgeMill container before modifying database")
+    if not SOURCE.is_file():
+        raise RuntimeError("Missing ForgeMill database: " + str(SOURCE))
+    if args.apply or args.remove:
+        require_stopped_container()
 
     uri = "file:" + str(SOURCE) + "?mode=ro"
-    with sqlite3.connect(uri, uri=True) as db:
+    with sqlite3.connect(uri, uri=True, timeout=30) as db:
+        verify(db)
         clauses = foreign_key_guards(db)
-        existing = db.execute(
+        current = db.execute(
             "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
             (NAME,),
         ).fetchone()
-        print("Integrity:", db.execute("PRAGMA integrity_check").fetchone()[0])
-        print("Template FK guards:", len(clauses))
-        print("Guard installed:", bool(existing))
-        print("Target:", args.target_id)
-        rows = db.execute(
-            """SELECT t.id,t.name,t.moref,
-               (SELECT COUNT(*) FROM deployments d WHERE d.template_id=t.id)
-               FROM templates t WHERE t.target_id=?
-               ORDER BY t.id""", (args.target_id,),
-        ).fetchall()
-        for row in rows:
-            print("Template:", *row)
-
+        wanted = desired_sql(clauses)
+        existing_sql = current[0] if current else None
+        print("Declared FK guards:", len(clauses))
+        print("Installed guard:", "all-target" if existing_sql == wanted else (
+            "legacy/other" if existing_sql else "none"))
+        describe(db)
         if not args.apply and not args.remove:
-            print("READ ONLY. Stop the container and run --apply for temporary protection.")
+            print("READ ONLY. No database changes.")
             return 0
-        if args.apply and existing:
-            print("Existing guard found; no changes. To remove later use --remove.")
+        if args.apply and existing_sql == wanted:
+            print("All-target guard already installed; no changes.")
             return 0
-        if args.remove and not existing:
-            print("Guard absent; nothing to remove.")
+        if args.remove and not existing_sql:
+            print("No guard installed; no changes.")
             return 0
+        if existing_sql and existing_sql != wanted and not approved_existing(existing_sql, clauses):
+            raise RuntimeError("Unexpected trigger with same name; refusing to overwrite or remove it")
 
         os.umask(0o077)
         BACKUP_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        backup = BACKUP_DIR / f"template-sync-guard-{timestamp}.db"
-        with sqlite3.connect(str(backup)) as dst:
-            db.backup(dst)
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup = BACKUP_DIR / f"template-sync-guard-{stamp}.db"
+        with sqlite3.connect(str(backup)) as dest:
+            db.backup(dest)
         os.chmod(backup, 0o600)
-        with sqlite3.connect(str(backup)) as verify:
-            if verify.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-                raise RuntimeError("Backup integrity failed")
+        with sqlite3.connect(str(backup)) as bcheck:
+            verify(bcheck)
         print("Verified backup:", backup)
 
-    original = SOURCE.stat()
-    with sqlite3.connect(str(SOURCE), timeout=30) as db:
-        db.execute("PRAGMA foreign_keys=ON")
+    ownership = SOURCE.stat()
+    # A single transaction guarantees a scoped-to-global upgrade cannot
+    # temporarily leave the database without either guard if it fails.
+    with sqlite3.connect(str(SOURCE), timeout=30) as live:
+        live.execute("PRAGMA foreign_keys=ON")
+        if existing_sql:
+            live.execute(f"DROP TRIGGER {qi(NAME)}")
         if args.apply:
-            db.execute(sql_for(args.target_id, clauses))
-            print("Installed temporary FK-safe sync guard")
-        else:
-            db.execute(f"DROP TRIGGER {qi(NAME)}")
-            print("Removed temporary FK-safe sync guard")
-        db.commit()
-        result = db.execute("PRAGMA integrity_check").fetchone()[0]
-        if result != "ok":
-            raise RuntimeError("Post-change integrity failure: " + result)
-        print("Post-change integrity:", result)
-
-    # SQLite WAL / SHM files created by root must stay accessible to the
-    # original unprivileged container UID. Restore owner for any such files.
+            live.execute(wanted)
+        verify(live)
+        live.commit()
+    # Root may have created WAL/SHM sidecars. Restore their original access.
     for suffix in ("", "-wal", "-shm"):
-        file = Path(str(SOURCE) + suffix)
-        if file.exists():
-            os.chown(file, original.st_uid, original.st_gid)
-    print("Complete; restart ForgeMill only after successful integrity check.")
+        part = Path(str(SOURCE) + suffix)
+        if part.exists():
+            os.chown(part, ownership.st_uid, ownership.st_gid)
+    print("Guard:", "INSTALLED for all targets" if args.apply else "REMOVED")
+    print("Restart the ForgeMill container, then retry Sync Templates.")
     return 0
+
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        print("ERROR:", exc, file=sys.stderr)
         sys.exit(1)
