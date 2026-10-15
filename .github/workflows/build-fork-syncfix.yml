@@ -1,0 +1,70 @@
+name: Build patched ForgeMill image (template sync FK fix)
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Existing official blink-zero/forgemill release tag (example: v0.21.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-patched-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    steps:
+      - name: Checkout installer patch files
+        uses: actions/checkout@v4
+
+      - name: Validate release tag and fetch official source
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$UPSTREAM_TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo 'Only a versioned upstream release tag is allowed' >&2
+            exit 1
+          }
+          git clone --quiet --depth 1 --branch "$UPSTREAM_TAG" \
+            https://github.com/blink-zero/forgemill.git upstream
+          git -C upstream rev-parse HEAD
+          python3 patches/patch-forgemill-template-sync.py upstream/internal/service/target.go
+          git -C upstream diff --check
+          git -C upstream diff -- internal/service/target.go
+          echo "VERSION=${UPSTREAM_TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Authenticate to GitHub Packages
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish patched image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./upstream
+          file: ./upstream/Dockerfile
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            VERSION=${{ env.VERSION }}-syncfix
+          tags: ghcr.io/${{ github.repository_owner }}/forgemill-syncfix:${{ env.VERSION }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=ForgeMill official release with dependency-safe ESXi template synchronization
+
+      - name: Explain deployment
+        shell: bash
+        run: |
+          echo "Patched image: ghcr.io/${{ github.repository_owner }}/forgemill-syncfix:$VERSION"
+          echo 'Make GHCR package readable to the intended server, or docker login on that server.'
+          echo 'The running ForgeMill container is NOT replaced automatically.'
