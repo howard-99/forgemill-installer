@@ -8,6 +8,29 @@ require Python, Docker, vCenter or ovftool on ESXi.
 that successfully booted with working console keyboard in an isolated
 test VM on ESXi `172.31.31.192`. It is NOT an OVA.**
 
+## Recommended: tested direct-GitHub install on fresh ESXi
+
+Enable ESXi SSH, log in as root and run the following commands. They
+worked on a freshly installed ESXi host in the operator's environment:
+
+```sh
+esxcli network firewall ruleset set -e true -r httpClient
+
+wget --no-check-certificate -O /tmp/forgemill-esxi-import.sh https://raw.githubusercontent.com/howard-99/forgemill-installer/main/esxi-templates/import.sh
+
+sh /tmp/forgemill-esxi-import.sh all
+```
+
+`--no-check-certificate` disables TLS verification of the downloaded
+script; to reduce supply-chain risk, verify the script checksum against
+an independently trusted GitHub checkout before executing it.
+
+**This downloads the importer directly from GitHub, not the three VM
+images.** By default the importer still pulls its two OVAs and CHR VMDK
+from `http://172.31.31.183/iso`. Those images must be reachable from
+each new ESXi host or mirrored to another server using `BASE_URL`.
+This does not eliminate the default image-host dependency.
+
 ## Default three sources
 
 | ESXi/ForgeMill VM name | Local HTTP source under `/iso/` | Hardware |
@@ -28,12 +51,13 @@ mode remains available *only* for historical diagnostics; it is not part
 of `all`. Existing 7.23.7 templates and previous deployments are never
 deleted, changed, renamed or powered on by this installer.
 
-## Step A: refresh the script on the Proxmox HTTP image server
+## Optional fallback: publish the script on the Proxmox HTTP image server
 
-New ESXi builds have been observed hanging on TLS to GitHub despite
-working DNS and ping. Download from GitHub on **the Linux image server**
-and have ESXi download the updated script from the same LAN HTTP server
-that serves the images.
+Use this alternate path only if the direct-GitHub installer-script download
+does not work on a particular ESXi host. This step is **not needed**
+when the recommended commands above work. Download from GitHub on
+**the Linux image server**, then allow ESXi to fetch the same installer
+over LAN HTTP from the host serving the VM images.
 
 Run on Proxmox `172.31.31.183`:
 
@@ -69,7 +93,7 @@ For reproducibility, set `FORGEMILL_IMPORT_REF` to a reviewed full
 branch. Use `EXPECTED_SCRIPT_SHA256` to validate independently obtained
 script digests.
 
-## Step B: one-command setup on a fresh ESXi host
+## Alternative: install using the LAN-published script
 
 Enable SSH on ESXi and log in as `root`. By default, the installer selects
 a writable VMFS datastore with at least **12 GiB free**, uses standard
