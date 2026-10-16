@@ -1,5 +1,47 @@
 # ForgeMill installer
 
+## Fresh ESXi — install all three templates (tested SSH commands)
+
+On a **fresh VMware ESXi host**, enable SSH and paste these exact commands
+as `root`. This is the sequence tested successfully on the operator's ESXi
+environment; the VM source images must also be reachable by the host.
+
+```sh
+esxcli network firewall ruleset set -e true -r httpClient
+
+wget --no-check-certificate -O /tmp/forgemill-esxi-import.sh https://raw.githubusercontent.com/howard-99/forgemill-installer/main/esxi-templates/import.sh
+
+sh /tmp/forgemill-esxi-import.sh all
+```
+
+The `all` mode registers **three powered-off VMware template-source VMs**:
+
+| Source VM | Image |
+| --- | --- |
+| `Template-Ubuntu-24.04` | Ubuntu Server 24.04 |
+| `Template-Rocky-9.8` | Rocky Linux 9.8 |
+| `Template-MikroTik-CHR-7.21rc6` | MikroTik CHR (working direct-ESXi console test) |
+
+To install only one, use `sh /tmp/forgemill-esxi-import.sh ubuntu`,
+`rocky` or `mikrotik`. To inspect the host or installed sources,
+use `check` or `status` instead of `all`.
+
+**Security and image-source notes:** `--no-check-certificate` disables
+TLS certificate verification for the **installer-script download**; it
+was needed for the tested ESXi configuration but does not authenticate the
+download. Verify the downloaded script's SHA-256 against a trusted copy
+before executing it in a sensitive environment. **This GitHub command
+downloads the importer itself directly; the importer still downloads
+the Ubuntu, Rocky and MikroTik images from its configured image server
+(default `http://172.31.31.183/iso`).** The script's `BASE_URL` can be
+overridden when images are mirrored somewhere else; it does not automatically
+download those three disk images from GitHub.
+
+For custom datastores, image checksums, network port groups and caveats,
+see the [full ESXi template installation guide](esxi-templates/README.md).
+
+---
+
 A lightweight installer for [ForgeMill](https://github.com/blink-zero/forgemill/), with deliberate upgrades, persistent data and bounded logs.
 
 See [operational notes](NOTES.md) for storage, credentials, maintenance and validation details, and [the changelog](CHANGELOG.md) for changes.
@@ -98,22 +140,18 @@ virtual hardware 17 and the default virtual keyboard (no additional
 PS/2/USB keyboard tweaks). The new source has a VMXNET3 NIC; a
 ForgeMill-*deployed* clone still needs its own keyboard/boot test.
 
-ESXi BusyBox `wget` has sometimes hung when accessing GitHub HTTPS.
-Publish the current GitHub script on your Proxmox image server
-`172.31.31.183` first (follow the
-[image-server preparation](esxi-templates/README.md)), using
-[the publisher](esxi-templates/publish-to-image-server.sh). **From a
-fresh ESXi SSH console as root**:
+Use the **tested direct-GitHub commands at the top of this README** to
+download the importer on a new ESXi host and install all three source VMs.
+For sites where ESXi cannot access GitHub, the
+[image-server publisher](esxi-templates/publish-to-image-server.sh) remains
+an alternative way to distribute the script over a trusted LAN.
 
-```sh
-wget -O /tmp/forgemill-esxi-import.sh http://172.31.31.183/iso/forgemill-esxi-import.sh && sh -n /tmp/forgemill-esxi-import.sh && sh /tmp/forgemill-esxi-import.sh check && sh /tmp/forgemill-esxi-import.sh all && sh /tmp/forgemill-esxi-import.sh status
-```
-
-This assumes the image server hosts the two OVAs and
-`chr-7.21rc6-legacy-bios.vmdk`. Before production execution, compare
-the downloaded script's SHA-256 with the trusted publisher output,
-and set `CHR_721RC6_SHA256` to the independently measured VMDK checksum;
-HTTP does not authenticate the contents.
+The default image sources are still the two OVAs and
+`chr-7.21rc6-legacy-bios.vmdk` on `172.31.31.183/iso`, even when the
+**installer script** was downloaded directly from GitHub. To change the
+source, mirror all three files and set `BASE_URL`. In production, pin the
+image checksums (including `CHR_721RC6_SHA256`) to values measured over
+a trusted channel; plain HTTP does not authenticate these assets.
 
 **Important:** The direct 7.21rc6 console test does not prove that an
 unpatched ForgeMill standalone-ESXi clone will preserve IDE or accept
